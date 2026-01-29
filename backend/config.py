@@ -26,7 +26,10 @@ FRONTEND_URLS = [
     "http://localhost:3000",
     "http://127.0.0.1:5173",
     "http://127.0.0.1:3000",
+    os.getenv("FRONTEND_URL", ""),  # Production frontend URL
 ]
+# Remove empty strings
+FRONTEND_URLS = [url for url in FRONTEND_URLS if url]
 
 # Server
 API_TITLE = "Automação de Orçamentos"
