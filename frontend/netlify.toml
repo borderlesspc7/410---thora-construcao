@@ -1,0 +1,14 @@
+[build]
+  command = "npm run build"
+  publish = "dist"
+
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200
+
+[context.production]
+  environment = { VITE_API_URL = "https://four10-thora-construcao.onrender.com" }
+
+[context.deploy-preview]
+  environment = { VITE_API_URL = "https://four10-thora-construcao.onrender.com" }

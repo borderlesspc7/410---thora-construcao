@@ -21,7 +21,7 @@
 | **Region**        | `Ohio (US East)` ou próximo de seus usuários                                             |
 | **Branch**        | `main`                                                                                   |
 | **Runtime**       | `Python 3`                                                                               |
-| **Build Command** | `pip install -r backend/requirements.txt && pip install gunicorn uvicorn[standard]` |
+| **Build Command** | `pip install -r backend/requirements.txt && pip install gunicorn uvicorn[standard]`      |
 | **Start Command** | `cd backend && gunicorn -w 4 -b 0.0.0.0:$PORT -k uvicorn.workers.UvicornWorker main:app` |
 
 ### 3️⃣ Configurar Variáveis de Ambiente
@@ -46,6 +46,68 @@ FIREBASE_CREDENTIALS={"type":"service_account","project_id":"seu-project",...}
 - Clique em **"Deploy"**
 - Aguarde 5-10 minutos
 - Sua API estará disponível em: `https://borderless-api.onrender.com`
+
+---
+
+## Frontend no Netlify 🚀
+
+### 1️⃣ Preparar o repositório
+
+Os arquivos já foram criados:
+
+- ✅ `frontend/netlify.toml` - Configuração de build e redirects
+- ✅ `frontend/.env.production` - Variáveis de produção
+
+### 2️⃣ Fazer Deploy no Netlify
+
+**Opção A: Via GitHub (Recomendado)**
+
+1. Acesse [Netlify.com](https://netlify.com)
+2. Clique em **"Add new site"** → **"Import an existing project"**
+3. Selecione **GitHub** e escolha seu repositório
+4. Configure:
+   - **Base directory**: `frontend`
+   - **Build command**: `npm run build`
+   - **Publish directory**: `dist`
+
+5. Clique em **"Deploy"**
+6. Pronto! Seu site estará em: `https://seu-site.netlify.app`
+
+**Opção B: Via CLI (Mais rápido)**
+
+```bash
+# 1. Instale Netlify CLI
+npm install -g netlify-cli
+
+# 2. Entre na pasta frontend
+cd frontend
+
+# 3. Build
+npm run build
+
+# 4. Deploy
+netlify deploy --prod --dir=dist
+```
+
+### 3️⃣ Configurar variáveis de ambiente (se necessário)
+
+Se a URL do backend for diferente:
+
+1. No painel do Netlify: **"Site settings"** → **"Build & deploy"** → **"Environment"**
+2. Adicione:
+   ```
+   VITE_API_URL=https://four10-thora-construcao.onrender.com
+   ```
+3. Clique em **"Deploy site"** novamente
+
+### ✅ Verificação Final
+
+Teste seu frontend:
+
+- [ ] Site acessível em `https://seu-site.netlify.app`
+- [ ] Upload de PDF funcionando
+- [ ] Dados salvando no Firebase
+- [ ] CORS sem erros (verificar console do navegador)
 
 ---
 
