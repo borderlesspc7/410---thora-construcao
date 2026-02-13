@@ -41,7 +41,7 @@ const Dashboard: React.FC = () => {
   const navigate = useNavigate()
 
   return (
-    <div className="min-h-screen w-screen bg-slate-100">
+    <div className="flex-1 overflow-auto bg-slate-50">
       <div className="mx-auto w-full max-w-7xl px-6 py-8">
         {/* Header */}
         <div className="flex items-center justify-between mb-10">

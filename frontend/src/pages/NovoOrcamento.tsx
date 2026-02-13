@@ -6,7 +6,6 @@ import {
   X,
   CheckCircle2,
   Loader2,
-  ArrowLeft,
   AlertCircle,
 } from "lucide-react";
 import { useNavigate } from "react-router-dom";
@@ -86,17 +85,7 @@ export default function NovoOrcamento() {
   };
 
   return (
-    <div className="flex flex-col items-center px-6 py-12 min-h-screen bg-slate-50">
-      {/* Botão de Voltar */}
-      <div className="w-full max-w-2xl mb-6">
-        <button
-          onClick={() => navigate(-1)}
-          className="flex items-center text-sm text-slate-500 hover:text-slate-800 transition cursor-pointer"
-        >
-          <ArrowLeft className="w-4 h-4 mr-1" /> Voltar
-        </button>
-      </div>
-
+    <div className="flex-1 overflow-auto flex flex-col items-center px-6 py-12 bg-slate-50">
       <h1 className="text-2xl font-semibold text-gray-900">Novo Orçamento</h1>
 
       <p className="mt-2 text-gray-500">
