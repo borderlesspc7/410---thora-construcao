@@ -36,3 +36,13 @@ FRONTEND_URLS = [url for url in FRONTEND_URLS if url]
 API_TITLE = "Automação de Orçamentos"
 API_VERSION = "1.0.0"
 API_DESCRIPTION = "API para processar e gerar orçamentos de obras"
+
+# AI (OpenAI)
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
+OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+
+# Debug: verificar se chave foi carregada
+if OPENAI_API_KEY:
+    print(f"✅ OPENAI_API_KEY carregada (primeiros 10 chars): {OPENAI_API_KEY[:10]}...")
+else:
+    print("⚠️  OPENAI_API_KEY NÃO encontrada no .env")

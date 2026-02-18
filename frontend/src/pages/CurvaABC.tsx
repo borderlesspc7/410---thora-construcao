@@ -20,6 +20,7 @@ import {
   ResponsiveContainer,
   Cell,
 } from "recharts";
+import { standardizeItemsWithAI } from "../services/api";
 
 interface Item {
   id: string;
@@ -142,22 +143,25 @@ const CurvaABC: React.FC = () => {
   const [selectedFilter, setSelectedFilter] = useState<"all" | "A" | "B" | "C">(
     "all",
   );
+  const [items, setItems] = useState<Item[]>(MOCK_ITEMS);
+  const [aiLoading, setAiLoading] = useState(false);
+  const [aiError, setAiError] = useState<string | null>(null);
 
   // Calcula resumo
   const summary = useMemo(() => {
-    const total = MOCK_ITEMS.reduce((sum, item) => sum + item.valor_total, 0);
-    const countA = MOCK_ITEMS.filter((i) => i.classification === "A").length;
-    const countB = MOCK_ITEMS.filter((i) => i.classification === "B").length;
-    const countC = MOCK_ITEMS.filter((i) => i.classification === "C").length;
-    const valueA = MOCK_ITEMS.filter((i) => i.classification === "A").reduce(
+    const total = items.reduce((sum, item) => sum + item.valor_total, 0);
+    const countA = items.filter((i) => i.classification === "A").length;
+    const countB = items.filter((i) => i.classification === "B").length;
+    const countC = items.filter((i) => i.classification === "C").length;
+    const valueA = items.filter((i) => i.classification === "A").reduce(
       (sum, item) => sum + item.valor_total,
       0,
     );
-    const valueB = MOCK_ITEMS.filter((i) => i.classification === "B").reduce(
+    const valueB = items.filter((i) => i.classification === "B").reduce(
       (sum, item) => sum + item.valor_total,
       0,
     );
-    const valueC = MOCK_ITEMS.filter((i) => i.classification === "C").reduce(
+    const valueC = items.filter((i) => i.classification === "C").reduce(
       (sum, item) => sum + item.valor_total,
       0,
     );
@@ -174,13 +178,33 @@ const CurvaABC: React.FC = () => {
       percentB: total > 0 ? ((valueB / total) * 100).toFixed(1) : 0,
       percentC: total > 0 ? ((valueC / total) * 100).toFixed(1) : 0,
     };
-  }, []);
+  }, [items]);
 
   // Filtra itens
   const filteredItems = useMemo(() => {
-    if (selectedFilter === "all") return MOCK_ITEMS;
-    return MOCK_ITEMS.filter((item) => item.classification === selectedFilter);
-  }, [selectedFilter]);
+    if (selectedFilter === "all") return items;
+    return items.filter((item) => item.classification === selectedFilter);
+  }, [items, selectedFilter]);
+
+  const handleAiStandardize = async () => {
+    setAiLoading(true);
+    setAiError(null);
+    try {
+      const response = await standardizeItemsWithAI(items);
+      if (Array.isArray(response.items)) {
+        setItems((prev) =>
+          prev.map((item, idx) => ({
+            ...item,
+            ...response.items[idx],
+          })),
+        );
+      }
+    } catch (error: any) {
+      setAiError(error.message || "Erro ao padronizar itens com IA");
+    } finally {
+      setAiLoading(false);
+    }
+  };
 
   // Dados para o gráfico
   const chartData = [
@@ -240,7 +264,7 @@ const CurvaABC: React.FC = () => {
   };
 
   return (
-    <div className="min-h-screen bg-slate-100 py-8">
+    <div className="w-full min-h-full bg-slate-100 py-8 pb-16">
       <div className="max-w-7xl mx-auto px-4">
         {/* Header */}
         <div className="flex items-center gap-4 mb-8">
@@ -478,6 +502,12 @@ const CurvaABC: React.FC = () => {
           </div>
         </div>
 
+        {aiError && (
+          <div className="bg-red-50 border border-red-200 text-red-700 rounded-lg p-4 mb-6">
+            {aiError}
+          </div>
+        )}
+
         {/* Botões de Ação */}
         <div className="flex gap-4 justify-between">
           <button
@@ -487,13 +517,15 @@ const CurvaABC: React.FC = () => {
             ← Voltar
           </button>
           <button
-            onClick={() => {
-              alert("🚀 Próximo passo: Padronização com IA");
-              // Aqui irá para a próxima etapa
-            }}
-            className="px-6 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition font-medium flex items-center gap-2"
+            onClick={handleAiStandardize}
+            disabled={aiLoading}
+            className={`px-6 py-2 rounded-lg transition font-medium flex items-center gap-2 ${
+              aiLoading
+                ? "bg-blue-400 text-white cursor-not-allowed"
+                : "bg-blue-600 text-white hover:bg-blue-700"
+            }`}
           >
-            Próximo: IA <ChevronRight size={18} />
+            {aiLoading ? "Processando IA..." : "Próximo: IA"} <ChevronRight size={18} />
           </button>
         </div>
       </div>

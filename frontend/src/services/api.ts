@@ -153,3 +153,16 @@ export const exportToXLSX = async (items: any[]) => {
     throw new Error(error.response?.data?.detail || "Erro ao exportar arquivo");
   }
 };
+
+// ==================== AI OPERATIONS ====================
+
+export const standardizeItemsWithAI = async (items: any[]) => {
+  try {
+    const response = await apiClient.post("/api/ai/standardize", { items });
+    return response.data;
+  } catch (error: any) {
+    throw new Error(
+      error.response?.data?.detail || "Erro ao padronizar itens com IA",
+    );
+  }
+};

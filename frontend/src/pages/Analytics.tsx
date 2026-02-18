@@ -138,7 +138,7 @@ const Analytics: React.FC = () => {
   ];
 
   return (
-    <div className="flex flex-col h-full bg-slate-50">
+    <div className="flex flex-col min-h-full bg-slate-50 pb-16">
       {/* Header */}
       <header className="bg-white border-b border-slate-200 px-8 py-6 shadow-sm">
         <div className="flex items-center justify-between mb-4">

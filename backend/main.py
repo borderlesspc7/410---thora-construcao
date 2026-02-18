@@ -7,6 +7,10 @@ import uuid
 import logging
 from pathlib import Path
 from typing import List, Dict
+import json
+
+import httpx
+from pydantic import BaseModel, Field
 
 from config import (
     FRONTEND_URLS,
@@ -17,6 +21,8 @@ from config import (
     MAX_FILE_SIZE,
     TEMP_FOLDER,
     BASE_DIR,
+    OPENAI_API_KEY,
+    OPENAI_MODEL,
 )
 from firebase_service import OrcamentoFirestore
 
@@ -78,6 +84,100 @@ async def test_endpoint():
         "message": "✅ Backend está funcionando!",
         "timestamp": datetime.now().isoformat(),
     }
+
+# ============== AI STANDARDIZATION ==============
+class AIItem(BaseModel):
+    descricao: str
+    quantidade: float
+    unidade: str
+    valor_unitario: float
+    valor_total: float
+
+
+class AIStandardizeRequest(BaseModel):
+    items: List[AIItem] = Field(default_factory=list)
+
+
+@app.post("/api/ai/standardize")
+async def ai_standardize_items(payload: AIStandardizeRequest):
+    if not OPENAI_API_KEY:
+        raise HTTPException(
+            status_code=500,
+            detail="OPENAI_API_KEY não configurada",
+        )
+
+    system_message = (
+        "Você é um assistente de normalização de dados de orçamento. "
+        "Padronize descrições e unidades de medida, mantendo quantidades e valores. "
+        "Retorne apenas JSON válido com uma lista de itens."
+    )
+    user_message = {
+        "tarefa": "padronizar_itens",
+        "regras": {
+            "unidades": ["un", "m", "m2", "m3", "kg", "t", "l"],
+            "manter_campos": ["quantidade", "valor_unitario", "valor_total"],
+        },
+        "items": [item.model_dump() for item in payload.items],
+        "formato_retorno": {
+            "items": [
+                {
+                    "descricao": "string",
+                    "quantidade": 0,
+                    "unidade": "string",
+                    "valor_unitario": 0,
+                    "valor_total": 0,
+                }
+            ]
+        },
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.post(
+                "https://api.openai.com/v1/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {OPENAI_API_KEY}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "model": OPENAI_MODEL,
+                    "temperature": 0.1,
+                    "messages": [
+                        {"role": "system", "content": system_message},
+                        {"role": "user", "content": json.dumps(user_message)},
+                    ],
+                },
+            )
+
+        if response.status_code >= 400:
+            raise HTTPException(
+                status_code=502,
+                detail=f"Erro na OpenAI: {response.text}",
+            )
+
+        content = response.json()["choices"][0]["message"]["content"].strip()
+        if content.startswith("```"):
+            content = content.strip("`")
+            if content.startswith("json"):
+                content = content[4:].strip()
+
+        parsed = json.loads(content)
+        items = parsed.get("items") if isinstance(parsed, dict) else parsed
+        if not isinstance(items, list):
+            raise ValueError("Resposta de IA inválida")
+
+        return {
+            "status": "success",
+            "items": items,
+        }
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error(f"❌ Erro ao padronizar itens com IA: {exc}")
+        raise HTTPException(
+            status_code=500,
+            detail="Erro ao processar padronização com IA",
+        )
 
 # ============== UPLOAD PDF ==============
 @app.post("/api/upload")
