@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useState, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import {
   TrendingUp,
@@ -27,6 +27,8 @@ import {
   Legend,
   ResponsiveContainer,
 } from "recharts";
+import jsPDF from "jspdf";
+import html2canvas from "html2canvas";
 
 interface KPI {
   label: string;
@@ -40,6 +42,121 @@ const Analytics: React.FC = () => {
   const navigate = useNavigate();
   const [dateRange, setDateRange] = useState("30days");
   const [selectedMetric, setSelectedMetric] = useState("all");
+  const [isExporting, setIsExporting] = useState(false);
+  const dashboardRef = useRef<HTMLDivElement>(null);
+
+  const formatCurrencyK = (
+    value: number | string | ReadonlyArray<number | string> | undefined,
+  ) => {
+    const raw = Array.isArray(value) ? value[0] : value;
+    const num = typeof raw === "number" ? raw : raw ? Number(raw) : 0;
+    if (Number.isNaN(num)) {
+      return "R$ 0k";
+    }
+    return `R$ ${(num / 1000).toFixed(0)}k`;
+  };
+
+  // Função para exportar dashboard
+  const handleExportDashboard = async () => {
+    if (!dashboardRef.current) return;
+    
+    try {
+      setIsExporting(true);
+      
+      const pdf = new jsPDF("p", "mm", "a4");
+      const pageWidth = pdf.internal.pageSize.getWidth();
+      const pageHeight = pdf.internal.pageSize.getHeight();
+      const margin = 15;
+      
+      // Cabeçalho do PDF
+      pdf.setFontSize(20);
+      pdf.setFont("helvetica", "bold");
+      pdf.text("Dashboard de Analytics", margin, margin + 10);
+      
+      pdf.setFontSize(10);
+      pdf.setFont("helvetica", "normal");
+      pdf.text(`Data: ${new Date().toLocaleDateString("pt-BR")}`, margin, margin + 18);
+      pdf.text(`Período: ${dateRange === "30days" ? "Últimos 30 dias" : dateRange}`, margin, margin + 24);
+      
+      let yPosition = margin + 35;
+      
+      // Capturar KPIs
+      const kpiElements = dashboardRef.current.querySelectorAll(".kpi-card");
+      for (let i = 0; i < kpiElements.length; i++) {
+        const element = kpiElements[i] as HTMLElement;
+        try {
+          const canvas = await html2canvas(element, {
+            scale: 2,
+            backgroundColor: "#ffffff",
+            logging: false,
+          });
+          
+          const imgData = canvas.toDataURL("image/png");
+          const imgWidth = (pageWidth - 2 * margin) / 2 - 5;
+          const imgHeight = (canvas.height * imgWidth) / canvas.width;
+          
+          const xPosition = margin + (i % 2) * (imgWidth + 10);
+          
+          if (yPosition + imgHeight > pageHeight - margin) {
+            pdf.addPage();
+            yPosition = margin;
+          }
+          
+          pdf.addImage(imgData, "PNG", xPosition, yPosition, imgWidth, imgHeight);
+          
+          if (i % 2 === 1) {
+            yPosition += imgHeight + 10;
+          }
+        } catch (err) {
+          console.error("Erro ao capturar KPI:", err);
+        }
+      }
+      
+      if (kpiElements.length % 2 === 1) {
+        yPosition += 50;
+      }
+      
+      // Capturar gráficos
+      const chartElements = dashboardRef.current.querySelectorAll(".chart-card");
+      for (let i = 0; i < chartElements.length; i++) {
+        const element = chartElements[i] as HTMLElement;
+        try {
+          if (yPosition > margin + 40) {
+            pdf.addPage();
+            yPosition = margin;
+          }
+          
+          const canvas = await html2canvas(element, {
+            scale: 2,
+            backgroundColor: "#ffffff",
+            logging: false,
+          });
+          
+          const imgData = canvas.toDataURL("image/png");
+          const imgWidth = pageWidth - 2 * margin;
+          const imgHeight = (canvas.height * imgWidth) / canvas.width;
+          
+          if (yPosition + imgHeight > pageHeight - margin) {
+            pdf.addPage();
+            yPosition = margin;
+          }
+          
+          pdf.addImage(imgData, "PNG", margin, yPosition, imgWidth, imgHeight);
+          yPosition += imgHeight + 15;
+        } catch (err) {
+          console.error("Erro ao capturar gráfico:", err);
+        }
+      }
+      
+      // Salvar PDF
+      pdf.save(`Dashboard-Analytics-${new Date().toISOString().split("T")[0]}.pdf`);
+    } catch (error) {
+      console.error("Erro ao exportar dashboard:", error);
+      alert("Erro ao exportar dashboard. Tente novamente.");
+    } finally {
+      setIsExporting(false);
+    }
+  };
 
   // Dados simulados de gastos mensais
   const monthlyDataItems = [
@@ -148,9 +265,15 @@ const Analytics: React.FC = () => {
               Análise detalhada de custos e desempenho
             </p>
           </div>
-          <button className="flex items-center gap-2 bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg transition font-medium">
-            <Download className="w-5 h-5" />
-            Exportar Dashboard
+          <button 
+            onClick={handleExportDashboard}
+            disabled={isExporting}
+            className={`flex items-center gap-2 bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg transition font-medium ${
+              isExporting ? "opacity-50 cursor-not-allowed" : ""
+            }`}
+          >
+            <Download className={`w-5 h-5 ${isExporting ? "animate-bounce" : ""}`} />
+            {isExporting ? "Exportando..." : "Exportar Dashboard"}
           </button>
         </div>
 
@@ -175,13 +298,13 @@ const Analytics: React.FC = () => {
       </header>
 
       {/* Main Content */}
-      <main className="flex-1 overflow-auto p-8">
+      <main ref={dashboardRef} className="flex-1 overflow-auto p-8">
         {/* KPIs */}
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
           {kpis.map((kpi, idx) => (
             <div
               key={idx}
-              className="bg-white rounded-lg border border-slate-200 p-6 shadow-sm hover:shadow-md transition"
+              className="kpi-card bg-white rounded-lg border border-slate-200 p-6 shadow-sm hover:shadow-md transition"
             >
               <div className="flex items-start justify-between mb-4">
                 <div className={`${kpi.color} p-3 rounded-lg text-white`}>
@@ -208,7 +331,7 @@ const Analytics: React.FC = () => {
         {/* Charts */}
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 mb-8">
           {/* Orçado vs Executado */}
-          <div className="bg-white rounded-lg border border-slate-200 p-6 shadow-sm">
+          <div className="chart-card bg-white rounded-lg border border-slate-200 p-6 shadow-sm">
             <h3 className="text-lg font-semibold text-slate-900 mb-6">
               Orçado vs Executado
             </h3>
@@ -224,7 +347,7 @@ const Analytics: React.FC = () => {
                 <XAxis dataKey="month" stroke="#94a3b8" />
                 <YAxis stroke="#94a3b8" />
                 <Tooltip
-                  formatter={(value) => `R$ ${(value / 1000).toFixed(0)}k`}
+                  formatter={(value) => formatCurrencyK(value)}
                   labelStyle={{ color: "#000" }}
                 />
                 <Legend />
@@ -248,7 +371,7 @@ const Analytics: React.FC = () => {
           </div>
 
           {/* Distribuição por Categoria */}
-          <div className="bg-white rounded-lg border border-slate-200 p-6 shadow-sm">
+          <div className="chart-card bg-white rounded-lg border border-slate-200 p-6 shadow-sm">
             <h3 className="text-lg font-semibold text-slate-900 mb-6">
               Distribuição por Categoria
             </h3>
@@ -259,9 +382,10 @@ const Analytics: React.FC = () => {
                   cx="50%"
                   cy="50%"
                   labelLine={false}
-                  label={({ name, percentage }) =>
-                    `${name} ${percentage}%`
-                  }
+                  label={({ name, percent }) => {
+                    const pct = percent ? Math.round(percent * 100) : 0;
+                    return `${name ?? ""} ${pct}%`;
+                  }}
                   outerRadius={80}
                   fill="#8884d8"
                   dataKey="value"
@@ -270,9 +394,7 @@ const Analytics: React.FC = () => {
                     <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
                   ))}
                 </Pie>
-                <Tooltip
-                  formatter={(value) => `R$ ${(value / 1000).toFixed(0)}k`}
-                />
+                <Tooltip formatter={(value) => formatCurrencyK(value)} />
               </RechartsPieChart>
             </ResponsiveContainer>
           </div>
@@ -280,7 +402,7 @@ const Analytics: React.FC = () => {
 
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 mb-8">
           {/* Top Fornecedores */}
-          <div className="bg-white rounded-lg border border-slate-200 p-6 shadow-sm">
+          <div className="chart-card bg-white rounded-lg border border-slate-200 p-6 shadow-sm">
             <h3 className="text-lg font-semibold text-slate-900 mb-6">
               Top 5 Fornecedores
             </h3>
@@ -289,16 +411,14 @@ const Analytics: React.FC = () => {
                 <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
                 <XAxis dataKey="name" stroke="#94a3b8" />
                 <YAxis stroke="#94a3b8" />
-                <Tooltip
-                  formatter={(value) => `R$ ${(value / 1000).toFixed(0)}k`}
-                />
+                <Tooltip formatter={(value) => formatCurrencyK(value)} />
                 <Bar dataKey="spent" fill="#1F4E78" name="Gasto (R$)" />
               </BarChart>
             </ResponsiveContainer>
           </div>
 
           {/* Variação de Preços */}
-          <div className="bg-white rounded-lg border border-slate-200 p-6 shadow-sm">
+          <div className="chart-card bg-white rounded-lg border border-slate-200 p-6 shadow-sm">
             <h3 className="text-lg font-semibold text-slate-900 mb-6">
               Variação de Preços (Top 5)
             </h3>
@@ -331,7 +451,7 @@ const Analytics: React.FC = () => {
         </div>
 
         {/* Tabela de Fornecedores Detalhada */}
-        <div className="bg-white rounded-lg border border-slate-200 p-6 shadow-sm">
+        <div className="chart-card bg-white rounded-lg border border-slate-200 p-6 shadow-sm">
           <h3 className="text-lg font-semibold text-slate-900 mb-6">
             Análise Detalhada de Fornecedores
           </h3>

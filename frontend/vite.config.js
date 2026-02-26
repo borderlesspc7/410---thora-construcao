@@ -4,13 +4,18 @@ import tailwindcss from '@tailwindcss/vite'
 
 // https://vite.dev/config/
 export default defineConfig({
-  plugins: [tailwindcss(), react()],
+  plugins: [react(), tailwindcss()],
   resolve: {
-    // Ensure a single React instance to avoid invalid hook call errors.
     dedupe: ["react", "react-dom"],
   },
   server: {
-    port: 5173,
+    proxy: {
+      "/api": {
+        target: "http://localhost:8001",
+        changeOrigin: true,
+      },
+    },
+    port: 8000,
     strictPort: true,
     hmr: {
       protocol: "ws",

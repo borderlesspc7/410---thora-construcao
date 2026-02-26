@@ -1,0 +1,429 @@
+{
+  "tables": [
+    {
+      "page": 1,
+      "table_id": "page_0_table_0",
+      "rows": [
+        [
+          "BDI - BENEFÍCIOS E DESPESAS INIDIRETAS PARA ENCARGOS SOCIAIS: (preencher)",
+          "",
+          "",
+          ""
+        ],
+        [
+          "DESCREVER A QUE SE REFERE O BDI REFERENCIAL",
+          "",
+          "",
+          ""
+        ],
+        [
+          "COMPONENTE",
+          "",
+          "",
+          ""
+        ],
+        [
+          "A",
+          "",
+          "DESPESAS INDIRETAS",
+          "INCIDÊNCIA"
+        ],
+        [
+          "",
+          "1",
+          "Administração Central",
+          ""
+        ],
+        [
+          "",
+          "2",
+          "Seguros + Garantias",
+          ""
+        ],
+        [
+          "",
+          "3",
+          "Riscos",
+          ""
+        ],
+        [
+          "",
+          "4",
+          "Despesas Financeiras",
+          ""
+        ],
+        [
+          "SUBTOTAL \"A\"",
+          "",
+          "",
+          ""
+        ],
+        [
+          "B",
+          "",
+          "TRIBUTOS",
+          "INCIDÊNCIA"
+        ],
+        [
+          "",
+          "1",
+          "COFINS - Contribuição Financiamento Seguridade Social",
+          ""
+        ],
+        [
+          "",
+          "2",
+          "PIS - Programa de Integração Social",
+          ""
+        ],
+        [
+          "",
+          "3",
+          "ISS - Imposto Sobre Serviço de Qualquer Natureza",
+          ""
+        ],
+        [
+          "",
+          "4",
+          "CPRB - Contribuição Previdenciária sobre Receita Bruta",
+          ""
+        ],
+        [
+          "SUBTOTAL \"B\"",
+          "",
+          "",
+          ""
+        ],
+        [
+          "C",
+          "",
+          "BONIFICAÇÃO",
+          "INCIDÊNCIA"
+        ],
+        [
+          "",
+          "1",
+          "Lucro",
+          ""
+        ],
+        [
+          "",
+          "",
+          "",
+          ""
+        ],
+        [
+          "",
+          "",
+          "",
+          ""
+        ],
+        [
+          "",
+          "",
+          "",
+          ""
+        ],
+        [
+          "",
+          "",
+          "SUBTOTAL \"C\"",
+          ""
+        ],
+        [
+          "BDI",
+          "",
+          "",
+          ""
+        ],
+        [
+          "FÓRMULA UTILIZADA PARA CÁLCULO DO BDI",
+          "",
+          "",
+          ""
+        ],
+        [
+          "BDI= [(((1+(AC+S+R+G))×((1+DF)×(1+L)))/((1−I)))−1]×100",
+          "",
+          "",
+          ""
+        ],
+        [
+          "AC",
+          "Taxa representativa das despesas de rateio da Administração Central",
+          "",
+          ""
+        ],
+        [
+          "S",
+          "Taxa Representativa de Seguros",
+          "",
+          ""
+        ],
+        [
+          "R",
+          "Taxa Representativa de Riscos",
+          "",
+          ""
+        ],
+        [
+          "G",
+          "Taxa Representativa de Garantias",
+          "",
+          ""
+        ],
+        [
+          "DF",
+          "Taxa Representativa de Despesas Financeiras",
+          "",
+          ""
+        ],
+        [
+          "L",
+          "Taxa Representativa de Lucro",
+          "",
+          ""
+        ],
+        [
+          "I",
+          "Taxa Representativa de Incidencia de Impostos",
+          "",
+          ""
+        ],
+        [
+          "",
+          "Taxa Representativa da Incidênca de Impostos é aplicada sobre o preço de venda da prestação do serviço, enquanto que as demais taxas são aplicadas sobre o custo",
+          "",
+          ""
+        ],
+        [
+          "REFERÊNCIAS:",
+          "",
+          "",
+          ""
+        ],
+        [
+          "Fórmula de cálculo do BDI: Relatório do Acordão n° 2.622/2013 - TCU / Plenário",
+          "",
+          "",
+          ""
+        ]
+      ],
+      "original_rows": 34,
+      "columns": 4
+    },
+    {
+      "page": 2,
+      "table_id": "page_1_table_0",
+      "rows": [
+        [
+          "BDI - BENEFÍCIOS E DESPESAS INIDIRETAS PARA ENCARGOS SOCIAIS: (preencher)",
+          "",
+          "",
+          ""
+        ],
+        [
+          "DESCREVER A QUE SE REFERE O BDI DIFERENCIADO",
+          "",
+          "",
+          ""
+        ],
+        [
+          "COMPONENTE",
+          "",
+          "",
+          ""
+        ],
+        [
+          "A",
+          "",
+          "DESPESAS INDIRETAS",
+          "INCIDÊNCIA"
+        ],
+        [
+          "",
+          "1",
+          "Administração Central",
+          ""
+        ],
+        [
+          "",
+          "2",
+          "Seguros + Garantias",
+          ""
+        ],
+        [
+          "",
+          "3",
+          "Riscos",
+          ""
+        ],
+        [
+          "",
+          "4",
+          "Despesas Financeiras",
+          ""
+        ],
+        [
+          "SUBTOTAL \"A\"",
+          "",
+          "",
+          ""
+        ],
+        [
+          "B",
+          "",
+          "TRIBUTOS",
+          "INCIDÊNCIA"
+        ],
+        [
+          "",
+          "1",
+          "COFINS - Contribuição Financiamento Seguridade Social",
+          ""
+        ],
+        [
+          "",
+          "2",
+          "PIS - Programa de Integração Social",
+          ""
+        ],
+        [
+          "",
+          "3",
+          "ISS - Imposto Sobre Serviço de Qualquer Natureza",
+          ""
+        ],
+        [
+          "",
+          "4",
+          "CPRB - Contribuição Previdenciária sobre Receita Bruta",
+          ""
+        ],
+        [
+          "SUBTOTAL \"B\"",
+          "",
+          "",
+          ""
+        ],
+        [
+          "C",
+          "",
+          "BONIFICAÇÃO",
+          "INCIDÊNCIA"
+        ],
+        [
+          "",
+          "1",
+          "Lucro",
+          ""
+        ],
+        [
+          "",
+          "",
+          "",
+          ""
+        ],
+        [
+          "",
+          "",
+          "",
+          ""
+        ],
+        [
+          "",
+          "",
+          "",
+          ""
+        ],
+        [
+          "",
+          "",
+          "SUBTOTAL \"C\"",
+          ""
+        ],
+        [
+          "BDI",
+          "",
+          "",
+          ""
+        ],
+        [
+          "FÓRMULA UTILIZADA PARA CÁLCULO DO BDI",
+          "",
+          "",
+          ""
+        ],
+        [
+          "BDI= [(((1+(AC+S+R+G))×((1+DF)×(1+L)))/((1−I)))−1]×100",
+          "",
+          "",
+          ""
+        ],
+        [
+          "AC",
+          "Taxa representativa das despesas de rateio da Administração Central",
+          "",
+          ""
+        ],
+        [
+          "S",
+          "Taxa Representativa de Seguros",
+          "",
+          ""
+        ],
+        [
+          "R",
+          "Taxa Representativa de Riscos",
+          "",
+          ""
+        ],
+        [
+          "G",
+          "Taxa Representativa de Garantias",
+          "",
+          ""
+        ],
+        [
+          "DF",
+          "Taxa Representativa de Despesas Financeiras",
+          "",
+          ""
+        ],
+        [
+          "L",
+          "Taxa Representativa de Lucro",
+          "",
+          ""
+        ],
+        [
+          "I",
+          "Taxa Representativa de Incidencia de Impostos",
+          "",
+          ""
+        ],
+        [
+          "",
+          "Taxa Representativa da Incidênca de Impostos é aplicada sobre o preço de venda da prestação do serviço, enquanto que as demais taxas são aplicadas sobre o custo",
+          "",
+          ""
+        ],
+        [
+          "REFERÊNCIAS:",
+          "",
+          "",
+          ""
+        ],
+        [
+          "Fórmula de cálculo do BDI: Relatório do Acordão n° 2.622/2013 - TCU / Plenário",
+          "",
+          "",
+          ""
+        ]
+      ],
+      "original_rows": 34,
+      "columns": 4
+    }
+  ],
+  "total": 2
+}

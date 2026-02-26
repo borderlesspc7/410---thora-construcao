@@ -159,6 +159,14 @@ async def ai_standardize_items(payload: AIStandardizeRequest):
         
         if response.status_code >= 400:
             logger.error(f"Erro Gemini: {response.text}")
+            
+            # Tratamento específico para erro de quota (429)
+            if response.status_code == 429:
+                raise HTTPException(
+                    status_code=429,
+                    detail="Quota da API do Gemini excedida. Aguarde alguns minutos ou configure uma nova chave de API com quota disponível. Para usar outro modelo, altere GEMINI_MODEL no arquivo .env (ex: gemini-1.5-flash)",
+                )
+            
             raise HTTPException(
                 status_code=502,
                 detail=f"Erro na API do Gemini: {response.text}",
@@ -293,15 +301,68 @@ async def extract_pdf(upload_id: str):
         tables = []
         try:
             with pdfplumber.open(file_path) as pdf:
+                logger.info(f"📄 Processando PDF: {len(pdf.pages)} página(s)")
+                
                 for page_num, page in enumerate(pdf.pages):
+                    logger.info(f"  Página {page_num + 1}: {page.width}x{page.height}")
+                    
+                    # Estratégia 1: extract_tables() padrão
                     page_tables = page.extract_tables()
+                    
+                    # Se não encontrou tabelas, tentar com configurações customizadas
+                    if not page_tables:
+                        logger.info(f"  Tentando extração com settings customizados...")
+                        try:
+                            page_tables = page.extract_tables({
+                                "vertical_strategy": "text",
+                                "horizontal_strategy": "text",
+                                "snap_tolerance": 5,
+                                "join_tolerance": 5,
+                                "edge_min_length": 3,
+                            })
+                        except Exception as e:
+                            logger.warning(f"  Erro na extração customizada: {str(e)}")
+                    
+                    # Se ainda não encontrou tabelas, tentar extrair texto estruturado
+                    if not page_tables:
+                        logger.info(f"  Tentando extração de texto estruturado...")
+                        text = page.extract_text()
+                        if text:
+                            lines = [line.strip() for line in text.split('\n') if line.strip()]
+                            if lines:
+                                # Criar uma "tabela" com as linhas de texto
+                                page_tables = [[[line] for line in lines]]
+                                logger.info(f"  Extraído {len(lines)} linhas de texto")
+                    
                     if page_tables:
                         for table_idx, table in enumerate(page_tables):
+                            # Processar células mescladas (None) e limpar dados
+                            processed_rows = []
+                            for row in table:
+                                processed_row = []
+                                for cell in row:
+                                    # Converter None para string vazia
+                                    if cell is None:
+                                        processed_row.append("")
+                                    # Limpar espaços extras e quebras de linha
+                                    elif isinstance(cell, str):
+                                        cleaned = cell.strip().replace('\n', ' ')
+                                        processed_row.append(cleaned)
+                                    else:
+                                        processed_row.append(str(cell))
+                                processed_rows.append(processed_row)
+                            
                             tables.append({
                                 "page": page_num + 1,
                                 "table_id": f"page_{page_num}_table_{table_idx}",
-                                "rows": table
+                                "rows": processed_rows,
+                                "original_rows": len(table),
+                                "columns": len(table[0]) if table else 0
                             })
+                            logger.info(f"  ✓ Tabela {table_idx + 1}: {len(processed_rows)} linhas x {len(table[0]) if table else 0} colunas")
+                    else:
+                        logger.warning(f"  ⚠️  Nenhuma tabela encontrada na página {page_num + 1}")
+                        
         except Exception as e:
             logger.error(f"❌ Erro ao extrair tabelas: {str(e)}")
             raise HTTPException(
@@ -719,9 +780,11 @@ async def serve_frontend(path_name: str):
 # ============== RUN ==============
 if __name__ == "__main__":
     import uvicorn
+    import os
+    port = int(os.getenv("PORT", 8000))
     uvicorn.run(
         "main:app",
         host="0.0.0.0",
-        port=8000,
+        port=port,
         reload=False,
     )

@@ -1,5 +1,5 @@
 import React, { useState, useMemo, useEffect } from "react";
-import { useParams, useNavigate } from "react-router-dom";
+import { useParams, useNavigate, useLocation } from "react-router-dom";
 import {
   ArrowLeft,
   TrendingUp,
@@ -38,6 +38,7 @@ interface Item {
 const CurvaABC: React.FC = () => {
   const { uploadId } = useParams();
   const navigate = useNavigate();
+  const location = useLocation();
   const [selectedFilter, setSelectedFilter] = useState<"all" | "A" | "B" | "C">(
     "all",
   );
@@ -59,8 +60,40 @@ const CurvaABC: React.FC = () => {
       try {
         setLoading(true);
         setError(null);
-        const response = await getCurvaABC(uploadId);
-        setItems(response.items || []);
+        
+        // Verificar se há items selecionados passados via location.state
+        const selectedItems = location.state?.items as Item[] | undefined;
+        
+        if (selectedItems && selectedItems.length > 0) {
+          // Usar apenas os items selecionados e calcular classificação ABC
+          const sortedItems = [...selectedItems].sort((a, b) => b.valor_total - a.valor_total);
+          const total = sortedItems.reduce((sum, item) => sum + item.valor_total, 0);
+          
+          let accumulated = 0;
+          const itemsWithClassification = sortedItems.map((item) => {
+            accumulated += item.valor_total;
+            const accumulated_percentage = (accumulated / total * 100) || 0;
+            
+            let classification: "A" | "B" | "C" = "C";
+            if (accumulated_percentage <= 80) {
+              classification = "A";
+            } else if (accumulated_percentage <= 95) {
+              classification = "B";
+            }
+            
+            return {
+              ...item,
+              classification,
+              accumulated_percentage: Math.round(accumulated_percentage * 10) / 10,
+            };
+          });
+          
+          setItems(itemsWithClassification);
+        } else {
+          // Buscar todos os items da API
+          const response = await getCurvaABC(uploadId);
+          setItems(response.items || []);
+        }
       } catch (err: any) {
         console.error("Erro ao buscar Curva ABC:", err);
         setError(err.message || "Erro ao carregar dados da Curva ABC");
@@ -70,7 +103,7 @@ const CurvaABC: React.FC = () => {
     };
 
     fetchCurvaABC();
-  }, [uploadId]);
+  }, [uploadId, location.state]);
 
   // Calcula resumo
   const summary = useMemo(() => {
@@ -206,6 +239,21 @@ const CurvaABC: React.FC = () => {
             </p>
           </div>
         </div>
+
+        {/* Aviso de Itens Selecionados */}
+        {location.state?.items && !loading && (
+          <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 mb-6">
+            <div className="flex gap-3">
+              <CheckCircle2 size={20} className="text-blue-600 flex-shrink-0 mt-0.5" />
+              <div>
+                <h3 className="font-semibold text-blue-900">Análise de Itens Selecionados</h3>
+                <p className="text-sm text-blue-700 mt-1">
+                  Analisando {items.length} {items.length === 1 ? 'item selecionado' : 'itens selecionados'} da página de validação.
+                </p>
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* Loading State */}
         {loading && (
