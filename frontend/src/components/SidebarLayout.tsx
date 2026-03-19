@@ -5,6 +5,7 @@ import {
   FileText,
   BarChart3,
   TrendingUp,
+  Brain,
   Menu,
   X,
   LogOut,
@@ -26,6 +27,7 @@ const SidebarLayout: React.FC<SidebarLayoutProps> = ({ children }) => {
     { path: "/", label: "Dashboard", icon: Home },
     { path: "/orcamento", label: "Novo Orçamento", icon: FileText },
     { path: "/validacao", label: "Validação", icon: FileText },
+    { path: "/analise-detalhada", label: "Análise Detalhada", icon: Brain },
     { path: "/relatorios", label: "Relatórios", icon: BarChart3 },
     { path: "/analytics", label: "BI & Analytics", icon: TrendingUp },
   ];

@@ -16,7 +16,7 @@ import {
 import { exportToXLSX } from "../services/api";
 
 // --- CONFIGURAÇÃO OBRIGATÓRIA DO WORKER (PARA VITE) ---
-pdfjs.GlobalWorkerOptions.workerSrc = `//unpkg.com/pdfjs-dist@${pdfjs.version}/build/pdf.worker.min.mjs`;
+pdfjs.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@${pdfjs.version}/build/pdf.worker.min.js`;
 
 // --- INTERFACES ---
 interface ItemOrcamento {
@@ -63,9 +63,10 @@ export default function ValidacaoOrcamento() {
     if (location.state?.file) {
       setPdfFile(location.state.file);
     } else {
-      // Opcional: Se não tiver arquivo (ex: refresh na página), redirecionar ou mostrar erro
-      // navigate('/orcamento');
-      console.warn("Nenhum arquivo encontrado no estado da rota");
+      // Em produção, evitar warning ruidoso ao abrir rota diretamente.
+      if (import.meta.env.DEV) {
+        console.warn("Nenhum arquivo encontrado no estado da rota");
+      }
     }
 
     // Carregar dados extraídos da API

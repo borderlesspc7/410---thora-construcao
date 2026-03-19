@@ -21,7 +21,7 @@ import {
   ResponsiveContainer,
   Cell,
 } from "recharts";
-import { standardizeItemsWithAI, getCurvaABC } from "../services/api";
+import { standardizeItemsWithAI, getCurvaABC, analyzeWithAI } from "../services/api";
 
 interface Item {
   id: string;
@@ -55,6 +55,13 @@ const CurvaABC: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   const [aiLoading, setAiLoading] = useState(false);
   const [aiError, setAiError] = useState<string | null>(null);
+  const [aiResult, setAiResult] = useState<{
+    provider?: string;
+    totalItems?: number;
+    valorTotal?: number;
+    confianca?: number;
+    warnings?: string[];
+  } | null>(null);
 
   const toNumber = (value: unknown): number => {
     const n = Number(value);
@@ -79,6 +86,30 @@ const CurvaABC: React.FC = () => {
     };
   };
 
+  const classifyItemsABC = (baseItems: Item[]): Item[] => {
+    const sortedItems = [...baseItems].sort((a, b) => b.valor_total - a.valor_total);
+    const total = sortedItems.reduce((sum, item) => sum + item.valor_total, 0);
+    let accumulated = 0;
+
+    return sortedItems.map((item) => {
+      accumulated += item.valor_total;
+      const accumulated_percentage = total > 0 ? (accumulated / total) * 100 : 0;
+
+      let classification: "A" | "B" | "C" = "C";
+      if (accumulated_percentage <= 80) {
+        classification = "A";
+      } else if (accumulated_percentage <= 95) {
+        classification = "B";
+      }
+
+      return {
+        ...item,
+        classification,
+        accumulated_percentage: Math.round(accumulated_percentage * 10) / 10,
+      };
+    });
+  };
+
   // Buscar dados reais da Curva ABC
   useEffect(() => {
     const fetchCurvaABC = async () => {
@@ -91,48 +122,30 @@ const CurvaABC: React.FC = () => {
       try {
         setLoading(true);
         setError(null);
+
+        const editedItems = location.state?.editedItems as RawItem[] | undefined;
         
         // Verificar se há items selecionados passados via location.state
         const selectedItems = location.state?.items as RawItem[] | undefined;
-        
-        if (selectedItems && selectedItems.length > 0) {
+
+        if (editedItems && editedItems.length > 0) {
+          const normalizedEditedItems = editedItems.map((item, index) =>
+            normalizeItem(item, index),
+          );
+          setItems(classifyItemsABC(normalizedEditedItems));
+        } else if (selectedItems && selectedItems.length > 0) {
           // Usar apenas os items selecionados e calcular classificação ABC
           const normalizedSelectedItems = selectedItems.map((item, index) =>
             normalizeItem(item, index),
           );
-
-          const sortedItems = [...normalizedSelectedItems].sort(
-            (a, b) => b.valor_total - a.valor_total,
-          );
-          const total = sortedItems.reduce((sum, item) => sum + item.valor_total, 0);
-          
-          let accumulated = 0;
-          const itemsWithClassification = sortedItems.map((item) => {
-            accumulated += item.valor_total;
-            const accumulated_percentage = (accumulated / total * 100) || 0;
-            
-            let classification: "A" | "B" | "C" = "C";
-            if (accumulated_percentage <= 80) {
-              classification = "A";
-            } else if (accumulated_percentage <= 95) {
-              classification = "B";
-            }
-            
-            return {
-              ...item,
-              classification,
-              accumulated_percentage: Math.round(accumulated_percentage * 10) / 10,
-            };
-          });
-          
-          setItems(itemsWithClassification);
+          setItems(classifyItemsABC(normalizedSelectedItems));
         } else {
           // Buscar todos os items da API
           const response = await getCurvaABC(uploadId);
           const normalizedApiItems = ((response.items || []) as RawItem[]).map(
             (item, index) => normalizeItem(item, index),
           );
-          setItems(normalizedApiItems);
+          setItems(classifyItemsABC(normalizedApiItems));
         }
       } catch (err: any) {
         console.error("Erro ao buscar Curva ABC:", err);
@@ -188,15 +201,46 @@ const CurvaABC: React.FC = () => {
     setAiLoading(true);
     setAiError(null);
     try {
-      const response = await standardizeItemsWithAI(items);
-      if (Array.isArray(response.items)) {
-        setItems((prev) =>
-          prev.map((item, idx) => ({
-            ...item,
-            ...response.items[idx],
-          })),
-        );
+      if (!uploadId) {
+        throw new Error("Upload ID não fornecido para análise de IA");
       }
+
+      const response = await analyzeWithAI(uploadId, "all");
+      const aiItems = Array.isArray(response?.analysis?.items)
+        ? (response.analysis.items as RawItem[])
+        : [];
+      let nextItems: Item[] = [...items];
+
+      if (aiItems.length > 0) {
+        const normalized = aiItems.map((item, index) => normalizeItem(item, index));
+        nextItems = classifyItemsABC(normalized);
+        setItems(nextItems);
+      } else {
+        const standardized = await standardizeItemsWithAI(items);
+        if (Array.isArray(standardized.items)) {
+          const normalized = (standardized.items as RawItem[]).map((item, index) =>
+            normalizeItem(item, index),
+          );
+          nextItems = classifyItemsABC(normalized);
+          setItems(nextItems);
+        }
+      }
+
+      setAiResult({
+        provider: response?.provider,
+        totalItems: Number(response?.analysis?.summary?.total_items || 0),
+        valorTotal: Number(response?.analysis?.summary?.valor_total || 0),
+        confianca: Number(response?.analysis?.summary?.confianca_analise || 0),
+        warnings: Array.isArray(response?.warnings) ? response.warnings : [],
+      });
+
+      navigate(`/analise-detalhada/${uploadId}`, {
+        state: {
+          uploadId,
+          analysisResponse: response,
+          curvaItems: nextItems,
+        },
+      });
     } catch (error: any) {
       setAiError(error.message || "Erro ao padronizar itens com IA");
     } finally {
@@ -555,6 +599,15 @@ const CurvaABC: React.FC = () => {
         {aiError && (
           <div className="bg-red-50 border border-red-200 text-red-700 rounded-lg p-4 mb-6">
             {aiError}
+          </div>
+        )}
+
+        {aiResult && (
+          <div className="bg-emerald-50 border border-emerald-200 text-emerald-800 rounded-lg p-4 mb-6">
+            <p className="font-semibold">Análise de IA concluída</p>
+            <p className="text-sm mt-1">
+              Itens analisados: {aiResult.totalItems || 0} • Valor total: R$ {Number(aiResult.valorTotal || 0).toLocaleString("pt-BR", { minimumFractionDigits: 2 })} • Confiança: {(Number(aiResult.confianca || 0) * 100).toFixed(0)}%
+            </p>
           </div>
         )}
 

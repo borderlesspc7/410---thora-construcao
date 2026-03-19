@@ -7,14 +7,16 @@ import uuid
 import os
 import logging
 from pathlib import Path
-from typing import List, Dict, Optional, Any
+from typing import List, Dict, Tuple
 import json
+import re
 
 import httpx
 from pydantic import BaseModel, Field
 
 from config import (
     FRONTEND_URLS,
+    IS_VERCEL,
     API_TITLE,
     API_VERSION,
     API_DESCRIPTION,
@@ -23,9 +25,21 @@ from config import (
     TEMP_FOLDER,
     BASE_DIR,
     CACHE_FOLDER,
+    ENVIRONMENT,
     GEMINI_API_KEY,
     GEMINI_MODEL,
-    ENVIRONMENT,
+    OPENROUTER_API_KEY,
+    OPENROUTER_MODEL,
+    GROQ_API_KEY,
+    GROQ_MODEL,
+    OPENAI_API_KEY,
+    OPENAI_MODEL,
+    OLLAMA_ENABLED,
+    OLLAMA_BASE_URL,
+    OLLAMA_MODEL,
+    OLLAMA_TIMEOUT_SECONDS,
+    AI_PROVIDER_TIMEOUT_SECONDS,
+    ENABLE_MULTI_PROVIDER_CHAIN,
 )
 from firebase_service import OrcamentoFirestore
 from budget_parser import BudgetParser
@@ -56,7 +70,108 @@ _GEMINI_CANDIDATE_MODELS = [
 ]
 
 
-async def _call_gemini_generate_content(request_body: dict, timeout_seconds: float = 45.0):
+class AIProviderError(Exception):
+    def __init__(self, provider: str, details: str):
+        super().__init__(details)
+        self.provider = provider
+        self.details = details
+
+
+def _clean_json_text(raw_text: str) -> str:
+    text = raw_text.strip()
+    if text.startswith("```"):
+        text = re.sub(r"^```(?:json)?", "", text, count=1).strip()
+        text = re.sub(r"```$", "", text).strip()
+    return text
+
+
+def _normalize_unit(unit: str) -> str:
+    if not unit:
+        return "un"
+
+    value = unit.strip().lower().replace("²", "2").replace("³", "3")
+    aliases = {
+        "und": "un",
+        "unid": "un",
+        "unidade": "un",
+        "m²": "m2",
+        "m2": "m2",
+        "m³": "m3",
+        "m3": "m3",
+        "mt": "m",
+        "metro": "m",
+        "metros": "m",
+        "litro": "l",
+        "litros": "l",
+        "ton": "t",
+        "tonelada": "t",
+        "toneladas": "t",
+    }
+    return aliases.get(value, value)
+
+
+def _local_standardize_items(items: List[Dict]) -> List[Dict]:
+    standardized = []
+    for item in items:
+        descricao = str(item.get("descricao", "")).strip()
+        standardized.append(
+            {
+                "descricao": " ".join(descricao.split()).upper(),
+                "quantidade": item.get("quantidade", 0),
+                "unidade": _normalize_unit(str(item.get("unidade", ""))),
+                "valor_unitario": item.get("valor_unitario", 0),
+                "valor_total": item.get("valor_total", 0),
+            }
+        )
+    return standardized
+
+
+def _local_budget_analysis(upload_data: Dict) -> Dict:
+    source_items = upload_data.get("items") or []
+    items = _local_standardize_items(source_items)
+
+    analyzed_items = []
+    for index, item in enumerate(items, start=1):
+        quantidade = float(item.get("quantidade", 0) or 0)
+        valor_unitario = float(item.get("valor_unitario", 0) or 0)
+        valor_total = float(item.get("valor_total", 0) or quantidade * valor_unitario)
+
+        analyzed_items.append(
+            {
+                "id": f"item_{index}",
+                "descricao": item.get("descricao", ""),
+                "quantidade": quantidade,
+                "unidade": item.get("unidade", "un"),
+                "valor_unitario": valor_unitario,
+                "valor_total": valor_total,
+                "validado": True,
+                "notas": "Padronização local aplicada",
+            }
+        )
+
+    valor_total_geral = sum(float(item.get("valor_total", 0) or 0) for item in analyzed_items)
+
+    return {
+        "structure": {
+            "coluna_descricao": 0,
+            "coluna_quantidade": 1,
+            "coluna_unidade": 2,
+            "coluna_valor_unitario": 3,
+            "confianca": 0.6,
+        },
+        "items": analyzed_items,
+        "resumo": {
+            "total_items": len(analyzed_items),
+            "valor_total": valor_total_geral,
+            "confianca_analise": 0.6,
+            "avisos": [
+                "Análise local utilizada por indisponibilidade de IA remota",
+            ],
+        },
+    }
+
+
+async def _call_gemini_generate_content(request_body: dict, timeout_seconds: float = 45.0) -> Tuple[str, str]:
     attempted_models = []
     last_error_body = ""
 
@@ -72,11 +187,16 @@ async def _call_gemini_generate_content(request_body: dict, timeout_seconds: flo
                 f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
                 f"?key={GEMINI_API_KEY}"
             )
-            response = await client.post(url, json=request_body)
+            try:
+                response = await client.post(url, json=request_body)
+            except httpx.HTTPError as exc:
+                raise AIProviderError("gemini", f"Falha de conexão: {exc}") from exc
 
             if response.status_code < 400:
                 logger.info(f"✅ Gemini respondeu com modelo: {model}")
-                return response.json(), model
+                response_data = response.json()
+                content = response_data["candidates"][0]["content"]["parts"][0]["text"].strip()
+                return content, f"gemini:{model}"
 
             last_error_body = response.text
             logger.warning(
@@ -86,130 +206,253 @@ async def _call_gemini_generate_content(request_body: dict, timeout_seconds: flo
             if response.status_code == 404:
                 continue
 
-            if response.status_code == 429:
-                raise HTTPException(
-                    status_code=429,
-                    detail="Quota da API do Gemini excedida. Aguarde alguns minutos ou troque a chave/modelo.",
-                )
+            if response.status_code in (404, 429, 500, 502, 503, 504):
+                continue
 
-            raise HTTPException(
-                status_code=502,
-                detail=f"Erro na API do Gemini: {response.text}",
-            )
+            raise AIProviderError("gemini", f"Erro não recuperável (status {response.status_code}): {response.text}")
 
-    raise HTTPException(
-        status_code=502,
-        detail=(
+    raise AIProviderError(
+        "gemini",
+        (
             "Nenhum modelo Gemini compatível respondeu ao generateContent. "
             f"Modelos tentados: {', '.join(attempted_models)}. "
             f"Último erro: {last_error_body}"
         ),
     )
 
+
+async def _call_openai_compatible_generate_content(
+    provider: str,
+    base_url: str,
+    api_key: str,
+    model: str,
+    system_message: str,
+    user_message: Dict,
+    timeout_seconds: float = 45.0,
+) -> Tuple[str, str]:
+    if not api_key:
+        raise AIProviderError(provider, "API key ausente")
+
+    url = f"{base_url.rstrip('/')}/chat/completions"
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+    body = {
+        "model": model,
+        "temperature": 0.1,
+        "messages": [
+            {"role": "system", "content": system_message},
+            {"role": "user", "content": json.dumps(user_message, ensure_ascii=False)},
+        ],
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=timeout_seconds) as client:
+            response = await client.post(url, headers=headers, json=body)
+    except httpx.HTTPError as exc:
+        raise AIProviderError(provider, f"Falha de conexão: {exc}") from exc
+
+    if response.status_code >= 400:
+        if response.status_code in (401, 403):
+            raise AIProviderError(provider, f"Chave inválida ou sem permissão ({response.status_code})")
+        raise AIProviderError(provider, f"Erro HTTP {response.status_code}: {response.text}")
+
+    data = response.json()
+    choices = data.get("choices") or []
+    if not choices:
+        raise AIProviderError(provider, "Resposta sem choices")
+
+    message = choices[0].get("message") or {}
+    content = (message.get("content") or "").strip()
+    if not content:
+        raise AIProviderError(provider, "Resposta sem content")
+
+    return content, f"{provider}:{model}"
+
+
+async def _call_ollama_generate_content(
+    system_message: str,
+    user_message: Dict,
+    timeout_seconds: float = 45.0,
+) -> Tuple[str, str]:
+    if not OLLAMA_ENABLED:
+        raise AIProviderError("ollama", "Ollama desativado por configuração")
+
+    url = f"{OLLAMA_BASE_URL.rstrip('/')}/api/chat"
+    body = {
+        "model": OLLAMA_MODEL,
+        "stream": False,
+        "format": "json",
+        "options": {"temperature": 0.1},
+        "messages": [
+            {"role": "system", "content": system_message},
+            {"role": "user", "content": json.dumps(user_message, ensure_ascii=False)},
+        ],
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=timeout_seconds) as client:
+            response = await client.post(url, json=body)
+    except httpx.HTTPError as exc:
+        raise AIProviderError("ollama", f"Falha de conexão: {exc}") from exc
+
+    if response.status_code >= 400:
+        raise AIProviderError("ollama", f"Erro HTTP {response.status_code}: {response.text}")
+
+    data = response.json()
+    message = data.get("message") or {}
+    content = (message.get("content") or "").strip()
+    if not content:
+        raise AIProviderError("ollama", "Resposta sem content")
+
+    return content, f"ollama:{OLLAMA_MODEL}"
+
 # Cache em memória para modo offline (dados temporários)
 _OFFLINE_CACHE = {}
 
+# ============== HELPERS & DEPENDENCIES ==============
 
 async def get_current_user_id(request: Request) -> str:
     """
-    Identifica o usuário via Firebase Auth ID token.
-    Necessário para proteger endpoints sensíveis em produção.
+    Extrai user_id do Firebase token ou retorna um ID de desenvolvimento
+    TODO: Implementar validação real com Firebase
     """
-    auth_header = request.headers.get("Authorization", "")
+    # Tenta extrair do header Authorization: Bearer <token>
+    auth_header = request.headers.get("Authorization", "").strip()
     if auth_header.startswith("Bearer "):
-        token = auth_header[len("Bearer ") :].strip()
+        token = auth_header[7:]
         try:
-            decoded = firebase_auth.verify_id_token(token)
-            uid = decoded.get("uid")
-            if not uid:
-                raise ValueError("uid ausente no token")
-            return str(uid)
-        except Exception:
+            # Em development, aceita qualquer token
             if ENVIRONMENT == "development":
-                return request.headers.get("X-Dev-User", "dev-user")
-            raise HTTPException(status_code=401, detail="Token inválido")
-
-    # Dev fallback (evita travar desenvolvimento local)
+                return token[:20] if len(token) > 20 else token
+            # Em produção, validar com Firebase (TODO)
+            # decoded = firebase_auth.verify_id_token(token)
+            # return decoded.get("uid", "anonymous")
+        except Exception as e:
+            logger.warning(f"⚠️ Erro ao validar token: {e}")
+    
+    # Fallback: gerar ID anônimo para dev
     if ENVIRONMENT == "development":
-        dev_user = request.headers.get("X-Dev-User", "dev-user")
-        return dev_user
-
-    raise HTTPException(status_code=401, detail="Não autenticado")
-
-
-def _validate_upload_id(upload_id: str) -> str:
-    """
-    Valida e normaliza o upload_id para UUID canônico.
-    Ajuda a evitar path traversal e wildcard glob inseguro.
-    """
-    try:
-        return str(uuid.UUID(str(upload_id)))
-    except Exception:
-        raise HTTPException(status_code=400, detail="upload_id inválido (esperado UUID)")
-
-
-def _cache_path_for_upload_id(upload_id: str) -> Path:
-    upload_id = _validate_upload_id(upload_id)
-    return CACHE_FOLDER / f"{upload_id}.json"
-
-
-def _load_extracted_cache(upload_id: str) -> Optional[Dict[str, Any]]:
-    """
-    Carrega cache persistente em disco para suportar múltiplos workers/instâncias.
-    """
-    try:
-        cache_path = _cache_path_for_upload_id(upload_id)
-        if not cache_path.exists():
-            return None
-        with open(cache_path, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except HTTPException:
-        raise
-    except Exception as exc:
-        logger.warning(f"⚠️ Falha ao carregar cache offline: {exc}")
-        return None
-
-
-def _save_extracted_cache(upload_id: str, payload: Dict[str, Any]) -> None:
-    """
-    Salva cache persistente em disco para suportar múltiplos workers/instâncias.
-    """
-    upload_id = _validate_upload_id(upload_id)
-    cache_path = CACHE_FOLDER / f"{upload_id}.json"
-    tmp_path = CACHE_FOLDER / f"{upload_id}.json.tmp"
-
-    with open(tmp_path, "w", encoding="utf-8") as f:
-        json.dump(payload, f, ensure_ascii=False)
-
-    # Atomiza escrita no mesmo filesystem
-    os.replace(str(tmp_path), str(cache_path))
+        return "dev-user-" + str(uuid.uuid4())[:8]
+    
+    raise HTTPException(
+        status_code=401,
+        detail="❌ Autenticação requerida. Envie um Firebase ID token no header Authorization: Bearer <token>"
+    )
 
 
 def _meta_path_for_upload_id(upload_id: str) -> Path:
-    upload_id = _validate_upload_id(upload_id)
-    return CACHE_FOLDER / f"{upload_id}.meta.json"
+    """Retorna caminho de arquivo de metadados para um upload_id"""
+    return UPLOAD_FOLDER / f".meta_{upload_id}.json"
 
 
-def _save_upload_meta(upload_id: str, meta: Dict[str, Any]) -> None:
-    upload_id = _validate_upload_id(upload_id)
-    meta_path = _meta_path_for_upload_id(upload_id)
-    tmp_path = CACHE_FOLDER / f"{upload_id}.meta.json.tmp"
-
-    with open(tmp_path, "w", encoding="utf-8") as f:
-        json.dump(meta, f, ensure_ascii=False)
-    os.replace(str(tmp_path), str(meta_path))
-
-
-def _load_upload_meta(upload_id: str) -> Dict[str, Any]:
+def _save_upload_meta(upload_id: str, meta_dict: Dict) -> None:
+    """Salva metadados do upload em arquivo JSON"""
     try:
         meta_path = _meta_path_for_upload_id(upload_id)
-        if not meta_path.exists():
-            return {}
-        with open(meta_path, "r", encoding="utf-8") as f:
-            data = json.load(f)
-            return data if isinstance(data, dict) else {}
-    except Exception:
-        return {}
+        with open(meta_path, "w") as f:
+            json.dump(meta_dict, f, indent=2)
+        logger.debug(f"✅ Metadados salvos: {meta_path}")
+    except Exception as e:
+        logger.warning(f"⚠️  Erro ao salvar metadados: {e}")
+
+
+def _load_upload_meta(upload_id: str) -> Dict:
+    """Carrega metadados do upload de arquivo JSON"""
+    try:
+        meta_path = _meta_path_for_upload_id(upload_id)
+        if meta_path.exists():
+            with open(meta_path) as f:
+                return json.load(f)
+    except Exception as e:
+        logger.warning(f"⚠️  Erro ao carregar metadados: {e}")
+    return {}
+
+
+def _validate_upload_id(upload_id: str) -> str:
+    """Valida formato de upload_id (UUID)"""
+    try:
+        uuid.UUID(upload_id)
+        return upload_id
+    except ValueError:
+        raise HTTPException(
+            status_code=400,
+            detail=f"❌ Upload ID inválido: {upload_id}"
+        )
+
+
+def _cache_path_for_upload_id(upload_id: str) -> Path:
+    """Retorna caminho de arquivo de cache para um upload_id"""
+    return CACHE_FOLDER / f"{upload_id}.json"
+
+
+def _save_extracted_cache(upload_id: str, data: Dict) -> None:
+    """Persiste dados extraídos em arquivo JSON para acesso offline"""
+    try:
+        cache_path = _cache_path_for_upload_id(upload_id)
+        with open(cache_path, "w") as f:
+            json.dump(data, f, indent=2, default=str)
+        logger.debug(f"✅ Cache persistido: {cache_path}")
+    except Exception as e:
+        logger.warning(f"⚠️  Erro ao persistir cache: {e}")
+
+
+def _load_extracted_cache(upload_id: str) -> Dict | None:
+    """Carrega dados extraídos de arquivo JSON"""
+    try:
+        cache_path = _cache_path_for_upload_id(upload_id)
+        if cache_path.exists():
+            with open(cache_path) as f:
+                return json.load(f)
+    except Exception as e:
+        logger.warning(f"⚠️  Erro ao carregar cache: {e}")
+    return None
+
+
+def _get_upload_data_from_sources(upload_id: str) -> Dict | None:
+    """
+    Busca dados extraídos de múltiplas fontes em ordem de prioridade:
+    1. Cache em memória
+    2. Arquivo de cache em disco
+    3. Firestore
+    4. Fallback None
+    """
+    # 1. Cache em memória
+    if upload_id in _OFFLINE_CACHE:
+        return _OFFLINE_CACHE[upload_id]
+    
+    # 2. Arquivo de cache em disco
+    cached_data = _load_extracted_cache(upload_id)
+    if cached_data:
+        _OFFLINE_CACHE[upload_id] = cached_data
+        return cached_data
+    
+    # 3. Firestore
+    try:
+        firestore_data = OrcamentoFirestore.get_orcamento_by_upload_id(upload_id)
+        if firestore_data:
+            # Normalizar formato do Firestore para o formato esperado
+            normalized = {
+                "uploadId": firestore_data.get("uploadId", upload_id),
+                "userId": firestore_data.get("userId"),
+                "filename": firestore_data.get("filename"),
+                "items": firestore_data.get("items", []),
+                "tables": firestore_data.get("tables", []),
+                "resumo": firestore_data.get("resumo", {}),
+                "uploadedAt": firestore_data.get("uploadedAt"),
+                "extractedAt": firestore_data.get("extractedAt"),
+                "tablesFound": len(firestore_data.get("tables", [])),
+                "itemsFound": len(firestore_data.get("items", [])),
+                "status": firestore_data.get("status", "completed"),
+            }
+            _OFFLINE_CACHE[upload_id] = normalized
+            return normalized
+    except Exception as e:
+        logger.warning(f"⚠️  Erro ao buscar do Firestore: {e}")
+    
+    # 4. Fallback
+    return None
 
 # FastAPI app
 app = FastAPI(
@@ -269,10 +512,7 @@ class AIStandardizeRequest(BaseModel):
 
 
 @app.post("/api/ai/standardize")
-async def ai_standardize_items(
-    payload: AIStandardizeRequest,
-    user_id: str = Depends(get_current_user_id),
-):
+async def ai_standardize_items(payload: AIStandardizeRequest):
     if not GEMINI_API_KEY:
         raise HTTPException(
             status_code=503,
@@ -305,7 +545,7 @@ async def ai_standardize_items(
     }
 
     try:
-        request_body = {
+        gemini_request_body = {
             "contents": [
                 {
                     "parts": [
@@ -321,22 +561,79 @@ async def ai_standardize_items(
             }
         }
 
-        response_data, _model_used = await _call_gemini_generate_content(
-            request_body,
-            timeout_seconds=30.0,
-        )
-        if "candidates" not in response_data or not response_data["candidates"]:
-            raise ValueError("Resposta vazia do Gemini")
-        
-        content = response_data["candidates"][0]["content"]["parts"][0]["text"].strip()
-        
-        # Extrair JSON da resposta
-        if content.startswith("```"):
-            content = content.strip("`")
-            if content.startswith("json"):
-                content = content[4:].strip()
+        errors = []
+        content = ""
+        provider_used = ""
 
-        parsed = json.loads(content)
+        if OLLAMA_ENABLED:
+            try:
+                content, provider_used = await _call_ollama_generate_content(
+                    system_message=system_message,
+                    user_message=user_message,
+                    timeout_seconds=min(30.0, OLLAMA_TIMEOUT_SECONDS),
+                )
+            except AIProviderError as exc:
+                errors.append(f"{exc.provider}: {exc.details}")
+
+        if GEMINI_API_KEY:
+            try:
+                content, provider_used = await _call_gemini_generate_content(
+                    gemini_request_body,
+                    timeout_seconds=30.0,
+                )
+            except AIProviderError as exc:
+                errors.append(f"{exc.provider}: {exc.details}")
+
+        if not content and OPENROUTER_API_KEY:
+            try:
+                content, provider_used = await _call_openai_compatible_generate_content(
+                    provider="openrouter",
+                    base_url="https://openrouter.ai/api/v1",
+                    api_key=OPENROUTER_API_KEY,
+                    model=OPENROUTER_MODEL,
+                    system_message=system_message,
+                    user_message=user_message,
+                    timeout_seconds=30.0,
+                )
+            except AIProviderError as exc:
+                errors.append(f"{exc.provider}: {exc.details}")
+
+        if not content and GROQ_API_KEY:
+            try:
+                content, provider_used = await _call_openai_compatible_generate_content(
+                    provider="groq",
+                    base_url="https://api.groq.com/openai/v1",
+                    api_key=GROQ_API_KEY,
+                    model=GROQ_MODEL,
+                    system_message=system_message,
+                    user_message=user_message,
+                    timeout_seconds=30.0,
+                )
+            except AIProviderError as exc:
+                errors.append(f"{exc.provider}: {exc.details}")
+
+        if not content and OPENAI_API_KEY:
+            try:
+                content, provider_used = await _call_openai_compatible_generate_content(
+                    provider="openai",
+                    base_url="https://api.openai.com/v1",
+                    api_key=OPENAI_API_KEY,
+                    model=OPENAI_MODEL,
+                    system_message=system_message,
+                    user_message=user_message,
+                    timeout_seconds=30.0,
+                )
+            except AIProviderError as exc:
+                errors.append(f"{exc.provider}: {exc.details}")
+
+        if content:
+            parsed = json.loads(_clean_json_text(content))
+            ai_mode = "remote"
+        else:
+            parsed = {"items": _local_standardize_items([item.model_dump() for item in payload.items])}
+            provider_used = "local:fallback"
+            ai_mode = "local"
+
         items = parsed.get("items") if isinstance(parsed, dict) else parsed
         if not isinstance(items, list):
             raise ValueError("Resposta de IA inválida")
@@ -344,9 +641,10 @@ async def ai_standardize_items(
         return {
             "status": "success",
             "items": items,
+            "provider": provider_used,
+            "mode": ai_mode,
+            "warnings": errors,
         }
-    except HTTPException:
-        raise
     except Exception as exc:
         logger.error(f"❌ Erro ao padronizar itens com IA: {exc}")
         raise HTTPException(
@@ -383,9 +681,10 @@ async def upload_pdf(
         # Validar tamanho (50MB)
         contents = await file.read()
         if len(contents) > MAX_FILE_SIZE:
+            max_mb = MAX_FILE_SIZE / 1024 / 1024
             raise HTTPException(
                 status_code=413,
-                detail=f"❌ Arquivo muito grande. Máximo: 50MB. Seu arquivo tem: {len(contents) / 1024 / 1024:.2f}MB",
+                detail=f"❌ Arquivo muito grande. Máximo: {max_mb:.0f}MB. Seu arquivo tem: {len(contents) / 1024 / 1024:.2f}MB",
             )
         
         # Gerar ID único
@@ -627,6 +926,23 @@ class AnalyzeWithAIRequest(BaseModel):
     upload_id: str
     focus: str = "budget"  # budget, items, structure, all
 
+
+class ReviewedItem(BaseModel):
+    id: str | None = None
+    descricao: str
+    quantidade: float
+    unidade: str
+    valor_unitario: float
+    valor_total: float | None = None
+    validado: bool = True
+    notas: str | None = ""
+    classification: str | None = None
+    accumulated_percentage: float | None = None
+
+
+class SaveReviewedItemsRequest(BaseModel):
+    items: List[ReviewedItem] = Field(default_factory=list)
+
 @app.post("/api/analyze-with-ai")
 async def analyze_with_ai(
     payload: AnalyzeWithAIRequest,
@@ -663,14 +979,16 @@ async def analyze_with_ai(
                 detail="Recurso de IA indisponível: chave do Gemini não configurada",
             )
         
-        # Buscar dados extraídos (suporta múltiplos workers/instâncias)
-        upload_data = _OFFLINE_CACHE.get(payload.upload_id) or _load_extracted_cache(
-            payload.upload_id
-        )
+        # Buscar dados extraídos
+        upload_data = _OFFLINE_CACHE.get(payload.upload_id)
         if not upload_data:
             raise HTTPException(
                 status_code=404,
-                detail=f"❌ Dados extraídos não encontrados: {payload.upload_id}",
+                detail=(
+                    f"❌ Dados extraídos não encontrados: {payload.upload_id}. "
+                    "Se o servidor foi reiniciado e não houver dados no Firestore, "
+                    "reenvie o PDF para gerar um novo upload_id."
+                ),
             )
 
         expected_user = upload_data.get("userId")
@@ -697,7 +1015,7 @@ async def analyze_with_ai(
                 table_text += " | ".join(str(cell)[:40] for cell in row) + "\n"
             tables_text += table_text + "\n---\n"
         
-        # Payload para Gemini
+        # Payload para IA
         system_message = """Você é um especialista em análise de orçamentos e planilhas de construção civil.
 Analise os dados extraídos de um PDF de orçamento e:
 1. Identifique a estrutura (quais colunas representam descrição, quantidade, unidade, valor)
@@ -755,8 +1073,8 @@ Regras:
                 }
             }
         }
-        
-        request_body = {
+
+        gemini_request_body = {
             "contents": [
                 {
                     "parts": [
@@ -773,33 +1091,85 @@ Regras:
             }
         }
 
-        logger.info("📤 Enviando para Gemini para análise...")
-        response_data, _model_used = await _call_gemini_generate_content(
-            request_body,
-            timeout_seconds=45.0,
-        )
-        if "candidates" not in response_data or not response_data["candidates"]:
-            raise ValueError("Resposta vazia do Gemini")
-        
-        content = response_data["candidates"][0]["content"]["parts"][0]["text"].strip()
-        
-        # Extrair JSON da resposta
-        if "```json" in content:
-            content = content.split("```json")[1].split("```")[0].strip()
-        elif "```" in content:
-            content = content.split("```")[1].split("```")[0].strip()
-        
-        logger.info("✅ Resposta recebida do Gemini")
-        
-        # Parse JSON
-        try:
-            analysis = json.loads(content)
-        except json.JSONDecodeError as e:
-            logger.error(f"Erro ao parsear JSON: {content[:200]}")
-            raise HTTPException(
-                status_code=502,
-                detail="IA retornou resposta inválida",
-            )
+        errors = []
+        content = ""
+        provider_used = ""
+
+        if OLLAMA_ENABLED:
+            try:
+                content, provider_used = await _call_ollama_generate_content(
+                    system_message=system_message,
+                    user_message=user_message,
+                    timeout_seconds=min(AI_PROVIDER_TIMEOUT_SECONDS, OLLAMA_TIMEOUT_SECONDS),
+                )
+            except AIProviderError as exc:
+                errors.append(f"{exc.provider}: {exc.details}")
+
+        if not content and GEMINI_API_KEY:
+            try:
+                content, provider_used = await _call_gemini_generate_content(
+                    gemini_request_body,
+                    timeout_seconds=AI_PROVIDER_TIMEOUT_SECONDS,
+                )
+            except AIProviderError as exc:
+                errors.append(f"{exc.provider}: {exc.details}")
+
+        if not content and OPENROUTER_API_KEY and ENABLE_MULTI_PROVIDER_CHAIN:
+            try:
+                content, provider_used = await _call_openai_compatible_generate_content(
+                    provider="openrouter",
+                    base_url="https://openrouter.ai/api/v1",
+                    api_key=OPENROUTER_API_KEY,
+                    model=OPENROUTER_MODEL,
+                    system_message=system_message,
+                    user_message=user_message,
+                    timeout_seconds=AI_PROVIDER_TIMEOUT_SECONDS,
+                )
+            except AIProviderError as exc:
+                errors.append(f"{exc.provider}: {exc.details}")
+
+        if not content and GROQ_API_KEY and ENABLE_MULTI_PROVIDER_CHAIN:
+            try:
+                content, provider_used = await _call_openai_compatible_generate_content(
+                    provider="groq",
+                    base_url="https://api.groq.com/openai/v1",
+                    api_key=GROQ_API_KEY,
+                    model=GROQ_MODEL,
+                    system_message=system_message,
+                    user_message=user_message,
+                    timeout_seconds=AI_PROVIDER_TIMEOUT_SECONDS,
+                )
+            except AIProviderError as exc:
+                errors.append(f"{exc.provider}: {exc.details}")
+
+        if not content and OPENAI_API_KEY and ENABLE_MULTI_PROVIDER_CHAIN:
+            try:
+                content, provider_used = await _call_openai_compatible_generate_content(
+                    provider="openai",
+                    base_url="https://api.openai.com/v1",
+                    api_key=OPENAI_API_KEY,
+                    model=OPENAI_MODEL,
+                    system_message=system_message,
+                    user_message=user_message,
+                    timeout_seconds=AI_PROVIDER_TIMEOUT_SECONDS,
+                )
+            except AIProviderError as exc:
+                errors.append(f"{exc.provider}: {exc.details}")
+
+        if IS_VERCEL and not ENABLE_MULTI_PROVIDER_CHAIN and not content and errors:
+            errors.append("serverless: fallback local aplicado para reduzir timeout")
+
+        if content:
+            try:
+                analysis = json.loads(_clean_json_text(content))
+            except json.JSONDecodeError:
+                logger.warning("⚠️ IA retornou JSON inválido; aplicando fallback local")
+                errors.append("parser: resposta de IA inválida, fallback local aplicado")
+                analysis = _local_budget_analysis(upload_data)
+                provider_used = "local:fallback"
+        else:
+            analysis = _local_budget_analysis(upload_data)
+            provider_used = "local:fallback"
         
         # Validar estrutura
         items = analysis.get("items", [])
@@ -815,6 +1185,8 @@ Regras:
         # Salvar análise em cache
         _OFFLINE_CACHE[payload.upload_id]["ai_analysis"] = {
             "analyzed_at": datetime.now().isoformat(),
+            "provider": provider_used,
+            "warnings": errors,
             "structure": structure,
             "items": items,
             "summary": summary
@@ -825,6 +1197,8 @@ Regras:
         return {
             "status": "success",
             "upload_id": payload.upload_id,
+            "provider": provider_used,
+            "warnings": errors,
             "analysis": {
                 "structure": structure,
                 "items": items,
@@ -842,12 +1216,47 @@ Regras:
             detail=f"Erro ao analisar com IA: {str(e)}",
         )
 
+
+@app.get("/api/ai-analysis/{upload_id}")
+async def get_ai_analysis(upload_id: str):
+    """Retorna análise detalhada de IA já processada para um upload."""
+    upload_data = _get_upload_data_from_sources(upload_id)
+    if not upload_data:
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                f"❌ Upload não encontrado: {upload_id}. "
+                "Esse id pode ter expirado do cache local. Reenvie o PDF se necessário."
+            ),
+        )
+
+    ai_analysis = upload_data.get("ai_analysis")
+    if not ai_analysis:
+        raise HTTPException(
+            status_code=404,
+            detail="❌ Análise de IA ainda não foi gerada para este upload",
+        )
+
+    return {
+        "status": "success",
+        "upload_id": upload_id,
+        "analysis": {
+            "structure": ai_analysis.get("structure", {}),
+            "items": ai_analysis.get("items", []),
+            "summary": ai_analysis.get("summary", {}),
+            "confianca_geral": ai_analysis.get("summary", {}).get("confianca_analise", 0.8),
+        },
+        "provider": ai_analysis.get("provider", "desconhecido"),
+        "warnings": ai_analysis.get("warnings", []),
+        "analyzed_at": ai_analysis.get("analyzed_at"),
+    }
+
 # ============== FIRESTORE OPERATIONS ==============
 
 @app.get("/api/orcamentos")
 async def list_orcamentos(user_id: str = Depends(get_current_user_id)):
     """
-    Listar todos os orçamentos salvos no Firestore
+    Listar todos os orçamentos salvos no Firestore + cache offline
     
     Returns:
         {
@@ -857,7 +1266,7 @@ async def list_orcamentos(user_id: str = Depends(get_current_user_id)):
         }
     """
     try:
-        orcamentos = OrcamentoFirestore.list_all_orcamentos(user_id)
+        orcamentos = OrcamentoFirestore.list_all_orcamentos()
         return {
             "status": "success",
             "count": len(orcamentos),
@@ -909,6 +1318,102 @@ async def get_orcamento(
         raise HTTPException(
             status_code=500,
             detail=f"Erro ao recuperar orçamento: {str(e)}",
+        )
+
+
+@app.post("/api/orcamentos/{upload_id}/review-items")
+async def save_reviewed_items(upload_id: str, payload: SaveReviewedItemsRequest):
+    """Persiste itens revisados da aba de análise detalhada."""
+    try:
+        if not payload.items:
+            raise HTTPException(
+                status_code=400,
+                detail="❌ Nenhum item revisado enviado",
+            )
+
+        upload_data = _get_upload_data_from_sources(upload_id)
+        if not upload_data:
+            raise HTTPException(
+                status_code=404,
+                detail=f"❌ Orçamento não encontrado: {upload_id}",
+            )
+
+        normalized_items = []
+        for index, item in enumerate(payload.items, start=1):
+            quantidade = float(item.quantidade or 0)
+            valor_unitario = float(item.valor_unitario or 0)
+            valor_total = (
+                float(item.valor_total)
+                if item.valor_total is not None
+                else quantidade * valor_unitario
+            )
+
+            normalized_items.append(
+                {
+                    "id": item.id or f"item_{index}",
+                    "descricao": item.descricao,
+                    "quantidade": quantidade,
+                    "unidade": item.unidade,
+                    "valor_unitario": valor_unitario,
+                    "valor_total": valor_total,
+                    "validado": bool(item.validado),
+                    "status": "validado" if item.validado else "pendente_validacao",
+                    "notas": item.notas or "",
+                    "classification": item.classification,
+                    "accumulated_percentage": item.accumulated_percentage,
+                }
+            )
+
+        valor_total = sum(item["valor_total"] for item in normalized_items)
+        resumo = upload_data.get("resumo", {}) or {}
+        resumo["total_items"] = len(normalized_items)
+        resumo["valor_total"] = valor_total
+
+        upload_data["items"] = normalized_items
+        upload_data["resumo"] = resumo
+        upload_data["itemsFound"] = len(normalized_items)
+        upload_data["updatedAt"] = datetime.now().isoformat()
+
+        ai_analysis = upload_data.get("ai_analysis") or {}
+        if ai_analysis:
+            ai_summary = ai_analysis.get("summary", {}) or {}
+            ai_summary["total_items"] = len(normalized_items)
+            ai_summary["valor_total"] = valor_total
+            ai_analysis["items"] = normalized_items
+            ai_analysis["summary"] = ai_summary
+            ai_analysis["updated_at"] = datetime.now().isoformat()
+            upload_data["ai_analysis"] = ai_analysis
+
+        _OFFLINE_CACHE[upload_id] = upload_data
+
+        firestore_orcamento = OrcamentoFirestore.get_orcamento_by_upload_id(upload_id)
+        if firestore_orcamento and firestore_orcamento.get("id"):
+            OrcamentoFirestore.update_orcamento(
+                firestore_orcamento["id"],
+                {
+                    "items": normalized_items,
+                    "itemsData": {
+                        "items": normalized_items,
+                        "resumo": resumo,
+                    },
+                    "status": "reviewed",
+                },
+            )
+
+        return {
+            "status": "success",
+            "upload_id": upload_id,
+            "items_saved": len(normalized_items),
+            "valor_total": valor_total,
+            "message": "✅ Itens revisados salvos com sucesso",
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Erro ao salvar itens revisados: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Erro ao salvar itens revisados: {str(e)}",
         )
 
 # ============== CURVA ABC ==============

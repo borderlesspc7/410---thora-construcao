@@ -8,14 +8,23 @@ import {
 
 // Detectar URL da API
 // Prioridade:
-// 1) VITE_API_URL (quando definido)
-// 2) Em dev com app servido pelo backend em 8000: mesma origem
-// 3) Em dev com Vite: proxy/local backend
-// 4) Em produção: mesma origem
+// 1) Em produção no Vercel fullstack: mesma origem
+// 2) VITE_API_URL (quando definido)
+// 3) Em dev com app servido pelo backend em 8000: mesma origem
+// 4) Em dev com Vite: proxy/local backend
+// 5) Em produção: mesma origem
 const getAPIBase = () => {
   const isLocalhost = ["localhost", "127.0.0.1"].includes(
     window.location.hostname,
   );
+  const isVercelHost =
+    window.location.hostname.endsWith(".vercel.app") ||
+    window.location.hostname === "thora-construcao.vercel.app";
+
+  // No deploy fullstack do Vercel, API e frontend ficam no mesmo domínio.
+  if (!import.meta.env.DEV && isVercelHost) {
+    return window.location.origin;
+  }
 
   if (isLocalhost) {
     return window.location.origin;
@@ -37,6 +46,8 @@ const getAPIBase = () => {
 };
 
 const API_BASE = getAPIBase();
+
+console.info(`🌐 API Base: ${API_BASE}`);
 
 export const apiClient = axios.create({
   baseURL: API_BASE,
@@ -216,6 +227,70 @@ export const standardizeItemsWithAI = async (items: any[]) => {
   } catch (error: any) {
     throw new Error(
       error.response?.data?.detail || "Erro ao padronizar itens com IA",
+    );
+  }
+};
+
+export const analyzeWithAI = async (
+  uploadId: string,
+  focus: "budget" | "items" | "structure" | "all" = "all",
+) => {
+  try {
+    const response = await apiClient.post("/api/analyze-with-ai", {
+      upload_id: uploadId,
+      focus,
+    });
+    return response.data;
+  } catch (error: any) {
+    throw new Error(error.response?.data?.detail || "Erro ao analisar com IA");
+  }
+};
+
+export const getAIAnalysis = async (uploadId: string) => {
+  try {
+    const response = await apiClient.get(`/api/ai-analysis/${uploadId}`);
+    return response.data;
+  } catch (error: any) {
+    throw new Error(
+      error.response?.data?.detail || "Erro ao carregar análise detalhada",
+    );
+  }
+};
+
+export const saveReviewedItems = async (uploadId: string, items: any[]) => {
+  try {
+    const response = await apiClient.post(
+      `/api/orcamentos/${uploadId}/review-items`,
+      { items },
+    );
+    return response.data;
+  } catch (error: any) {
+    throw new Error(
+      error.response?.data?.detail || "Erro ao salvar itens revisados",
+    );
+  }
+};
+
+export const exportReviewedXLSX = async (uploadId: string) => {
+  try {
+    const curvaResponse = await getCurvaABC(uploadId);
+    const items = (curvaResponse?.items || []).map((item: any, index: number) => ({
+      id: index + 1,
+      code: String(item.id || index + 1).padStart(3, "0"),
+      description: item.descricao || "",
+      unit: item.unidade || "un",
+      qty: Number(item.quantidade || 0),
+      unitPrice: Number(item.valor_unitario || 0),
+    }));
+
+    if (!items.length) {
+      throw new Error("Nenhum item disponível para exportação");
+    }
+
+    return await exportToXLSX(items);
+  } catch (error: any) {
+    throw new Error(
+      error.message || error.response?.data?.detail || "Erro ao exportar revisão",
     );
   }
 };

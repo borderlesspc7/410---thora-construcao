@@ -5,6 +5,7 @@ import ValidacaoOrcamento from "./pages/ValidacaoOrcamento";
 import CurvaABC from "./pages/CurvaABC";
 import Reports from "./pages/Reports";
 import Analytics from "./pages/Analytics";
+import AnaliseDetalhada from "./pages/AnaliseDetalhada";
 import SidebarLayout from "./components/SidebarLayout";
 
 const App = () => {
@@ -16,6 +17,7 @@ const App = () => {
         <Route path="/orcamento" element={<NovoOrcamento />} />
         <Route path="/validacao" element={<ValidacaoOrcamento />} />
         <Route path="/curva-abc/:uploadId" element={<CurvaABC />} />
+        <Route path="/analise-detalhada/:uploadId" element={<AnaliseDetalhada />} />
         <Route path="/relatorios" element={<Reports />} />
         <Route path="/analytics" element={<Analytics />} />
 
