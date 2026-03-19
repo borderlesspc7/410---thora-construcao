@@ -79,7 +79,9 @@ apiClient.interceptors.request.use(async (config) => {
 
   try {
     const token = await ensureAuthToken();
-    (config.headers as any).Authorization = `Bearer ${token}`;
+    if (token) {
+      (config.headers as any).Authorization = `Bearer ${token}`;
+    }
   } catch (error) {
     console.warn("Falha ao obter token Firebase; usando fallback anônimo.", error);
   }

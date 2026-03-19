@@ -15,4 +15,4 @@ cmds = [
 cmds = ["npm run build --prefix frontend"]
 
 [start]
-cmd = "cd backend && gunicorn -w 2 -k uvicorn.workers.UvicornWorker -b 0.0.0.0:$PORT main:app"
+cmd = "cd backend && gunicorn -w 2 --timeout 600 --graceful-timeout 30 -k uvicorn.workers.UvicornWorker -b 0.0.0.0:$PORT main:app"

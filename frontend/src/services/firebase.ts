@@ -32,8 +32,10 @@ const analytics = getAnalytics(app);
 // Firebase Auth (protects backend endpoints)
 const auth = getAuth(app);
 let authInitPromise: Promise<string> | null = null;
+let firebaseAuthDisabled = false;
 
 export const ensureAuthToken = async (): Promise<string> => {
+  if (firebaseAuthDisabled) return "";
   if (authInitPromise) return authInitPromise;
 
   authInitPromise = (async () => {
@@ -49,8 +51,10 @@ export const ensureAuthToken = async (): Promise<string> => {
   try {
     return await authInitPromise;
   } catch (e) {
-    authInitPromise = null;
-    throw e;
+    // Avoid retry storm when anonymous auth is not configured in Firebase project.
+    firebaseAuthDisabled = true;
+    authInitPromise = Promise.resolve("");
+    return "";
   }
 };
 
