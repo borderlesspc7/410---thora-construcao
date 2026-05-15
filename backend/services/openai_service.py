@@ -5,6 +5,7 @@ Chave via OPENAI_API_KEY (nunca embutida no código).
 
 from __future__ import annotations
 
+import base64
 import json
 import logging
 import re
@@ -28,7 +29,8 @@ _MAX_CELL_CHARS = 120
 
 DETECTION_SYSTEM_PROMPT = (
     "Você é um especialista em engenharia de custos. Sua tarefa é localizar tabelas relevantes "
-    "de orçamento de obras em PDFs. Considere apenas as páginas iniciais fornecidas."
+    "de orçamento de obras em PDFs. Considere apenas as páginas iniciais fornecidas. "
+    "Retorne a resposta obrigatoriamente no formato JSON."
 )
 
 DETECTION_USER_PROMPT_TEMPLATE = {
@@ -54,48 +56,69 @@ DETECTION_USER_PROMPT_TEMPLATE = {
 }
 
 EXTRACTION_SYSTEM_PROMPT = (
-    "Você é um especialista em engenharia de custos e extração literal de planilhas orçamentárias. "
-    "Sua tarefa é transcrever exatamente as linhas da tabela selecionada no PDF, sem resumir, "
-    "sem inventar e sem omitir códigos ou descrições."
+    "Você é um Engenheiro de Custos especialista em análise de dados. Sua única missão é extrair os itens da planilha de ORÇAMENTO DETALHADO de arquivos PDF de licitações e estruturá-los em um JSON estrito.\n\n"
+    "REGRAS DE EXTRAÇÃO E MAPEAMENTO ESPACIAL (MUITO IMPORTANTE):\n\n"
+    "1. IDENTIFICAÇÃO DE COLUNAS POR CABEÇALHO: Localize horizontalmente onde começam e terminam as colunas 'UNID', 'QUANT', 'PREÇO UNITÁRIO' e 'PREÇO TOTAL'.\n"
+    "2. EXTRAÇÃO BASEADA EM LINHA: Para cada linha, garanta que o valor extraído pertence estritamente ao eixo vertical daquela coluna. Se uma célula estiver vazia, retorne 0.0. NUNCA puxe o valor da coluna vizinha para preencher um buraco.\n"
+    "3. RIGOR COM NÚMEROS E UNIDADES: A coluna 'Unidade' deve conter apenas siglas (M2, M3, UN, M, CHP, CHI, etc). Se a quantidade ou preço contiver letras (ex: '422,33 CHP'), separe o número para a coluna correta e a sigla para a coluna de unidade.\n"
+    "4. LIMPEZA MATEMÁTICA: Remova qualquer símbolo monetário ('R$') e converta os números do padrão brasileiro para o formato float universal (ex: de '1.234,56' para '1234.56'). Retorne APENAS NÚMEROS nos campos de quantidade e valores.\n"
+    "5. FÓRMULA DE CONSISTÊNCIA (SANITY CHECK): Verifique se Quantidade * Valor Unitário = Valor Total (com margem de erro de arredondamento). Se o cálculo não bater, RE-ESCANEIE a linha, pois houve erro de leitura ou deslocamento de coluna.\n"
+    "6. DIFERENCIE GRUPOS DE ITENS: Se a linha for apenas o título de um grupo (ex: '1. SERVIÇOS PRELIMINARES'), classifique o campo tipo como 'grupo'. Se for um serviço com quantidade e valor, classifique como 'item'.\n"
+    "7. REMOÇÃO DE LIXO: Ignore completamente linhas que contenham 'GDF', 'Processo SEI', cabeçalhos de tabela repetidos no meio da página, 'RESUMO GERAL', 'COMPOSIÇÕES', 'MAPA DE COTAÇÃO' e 'BDI'. Foque 100% no ORÇAMENTO DETALHADO.\n\n"
+    "FORMATO DE SAÍDA OBRIGATÓRIO (JSON):\n"
+    "Retorne um array de objetos JSON chamado orcamento_itens seguindo exatamente este schema:\n"
+    "{\n"
+    '  "orcamento_itens": [\n'
+    "    {\n"
+    '      "item": "string",\n'
+    '      "tipo": "grupo|item",\n'
+    '      "banco": "string",\n'
+    '      "codigo": "string",\n'
+    '      "descricao": "string",\n'
+    '      "unidade": "string",\n'
+    '      "quantidade": 0.0,\n'
+    '      "valor_unitario": 0.0,\n'
+    '      "valor_total": 0.0\n'
+    "    }\n"
+    "  ]\n"
+    "}"
 )
 
 EXTRACTION_USER_PROMPT_HEADER = (
-    "Extraia a tabela selecionada seguindo estas regras rigorosas:\n"
-    "1) Mapeamento literal: preserve cada linha exatamente como escrita no PDF.\n"
-    "2) Tratamento de células mescladas: se houver grupos como '1.1 Movimentação de Terra', "
-    "mantenha a hierarquia no JSON com um campo de grupo ou repita o cabeçalho do grupo em cada item.\n"
-    "3) Validação matemática interna: confira mentalmente Quantidade x Valor Unitário contra a coluna Total. "
-    "Se houver divergência, reanalise a linha antes de responder.\n"
-    "4) Limpeza de caracteres: normalize valores numéricos removendo R$, pontos de milhar e espaços. "
-    "Retorne apenas o número decimal puro (ex.: 1.250,50 -> 1250.50).\n"
-    "5) Foco na tabela selecionada: use apenas o contexto da tabela escolhida e ignore rodapés, "
-    "números de página, logos e textos institucionais.\n"
-    "6) Não resuma descrições, não altere códigos e não descarte linhas válidas.\n\n"
-    "Formato obrigatório do JSON:\n"
-    "{\n"
-    '  "items": [\n'
-    "    {\n"
-    '      "Item": "1.1",\n'
-    '      "Código": "12345",\n'
-    '      "Grupo": "1 Movimentação de Terra",\n'
-    '      "Descrição": "texto literal do PDF",\n'
-    '      "Unidade": "m3",\n'
-    '      "Quantidade": 10.0,\n'
-    '      "Valor Unitário": 1250.5,\n'
-    '      "Total": 12505.0\n'
-    "    }\n"
-    "  ],\n"
-    '  "resumo": {\n'
-    '    "total_items": 0,\n'
-    '    "valor_total": 0,\n'
-    '    "confianca": 0.0,\n'
-    '    "metodo": "gpt-4o"\n'
-    "  }\n"
-    "}\n"
-    "Se um item pertencer a um grupo, preserve o grupo em um campo próprio ou replique o cabeçalho do grupo "
-    "em cada item para não perder contexto."
+    "Extraia a tabela selecionada seguindo rigorosamente as regras do sistema, em especial o MAPEAMENTO ESPACIAL e o SANITY CHECK (Qtd * VU = Total)."
 )
 
+
+EXTRACTION_JSON_SCHEMA = {
+    "name": "orcamento_schema",
+    "strict": True,
+    "schema": {
+        "type": "object",
+        "properties": {
+            "orcamento_itens": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "item": {"type": ["string", "null"]},
+                        "tipo": {"type": "string", "enum": ["grupo", "item"]},
+                        "banco": {"type": ["string", "null"]},
+                        "codigo": {"type": ["string", "null"]},
+                        "descricao": {"type": "string"},
+                        "unidade": {"type": ["string", "null"]},
+                        "quantidade": {"type": "number"},
+                        "valor_unitario": {"type": "number"},
+                        "valor_total": {"type": "number"}
+                    },
+                    "required": ["item", "tipo", "banco", "codigo", "descricao", "unidade", "quantidade", "valor_unitario", "valor_total"],
+                    "additionalProperties": False
+                }
+            }
+        },
+        "required": ["orcamento_itens"],
+        "additionalProperties": False
+    }
+}
 
 class OpenAIServiceError(Exception):
     def __init__(self, message: str, *, status_code: int = 500, code: str = "openai_error"):
@@ -128,6 +151,18 @@ def _parse_json_content(content: str) -> Dict[str, Any]:
     return json.loads(text)
 
 
+import base64
+
+def _pdf_page_to_base64_image(pdf_content: bytes, page_number: int) -> str:
+    """Converte uma página do PDF para uma imagem base64 JPEG."""
+    with pdfplumber.open(BytesIO(pdf_content)) as pdf:
+        if page_number < 1 or page_number > len(pdf.pages):
+            raise ValueError(f"Página {page_number} inválida.")
+        page = pdf.pages[page_number - 1]
+        im = page.to_image(resolution=150).original
+        buffered = BytesIO()
+        im.convert("RGB").save(buffered, format="JPEG")
+        return base64.b64encode(buffered.getvalue()).decode("utf-8")
 def _extract_page_snippets(pdf_content: bytes, max_pages: int = _MAX_DETECTION_PAGES) -> List[Dict[str, Any]]:
     snippets: List[Dict[str, Any]] = []
     with pdfplumber.open(BytesIO(pdf_content)) as pdf:
@@ -222,26 +257,37 @@ def _normalize_structured_items(raw_items: Any) -> List[Dict[str, Any]]:
         if not isinstance(item, dict):
             continue
 
-        item_number = item.get("Item") or item.get("item") or item.get("item_numero") or index
-        codigo = item.get("Código") or item.get("codigo") or item.get("code") or ""
-        descricao = item.get("Descrição") or item.get("descricao") or item.get("description") or ""
-        unidade = item.get("Unidade") or item.get("unidade") or item.get("unit") or "un"
-        quantidade = _coerce_number(item.get("Quantidade") or item.get("quantidade") or item.get("qty"))
+        item_number = item.get("item") or item.get("Item") or item.get("item_numero") or index
+        tipo = item.get("tipo") or "item"
+        banco = item.get("banco") or ""
+        codigo = item.get("codigo") or item.get("Código") or item.get("code") or ""
+        descricao = item.get("descricao") or item.get("Descrição") or item.get("description") or ""
+        unidade = item.get("unidade") or item.get("Unidade") or item.get("unit") or "un"
+        quantidade = _coerce_number(item.get("quantidade") or item.get("Quantidade") or item.get("qty"))
         valor_unitario = _coerce_number(
-            item.get("Valor Unitário")
-            or item.get("valor_unitario")
+            item.get("valor_unitario")
+            or item.get("Valor Unitário")
             or item.get("valor_unitário")
             or item.get("unit_value")
         )
-        total = _coerce_number(item.get("Total") or item.get("total") or item.get("valor_total"))
+        total = _coerce_number(item.get("valor_total") or item.get("Total") or item.get("total"))
         if total <= 0 and quantidade and valor_unitario:
             total = quantidade * valor_unitario
+
+        # Se for grupo, tentamos manter o formato antigo de grupo ou apenas repassamos
+        grupo_val = ""
+        if tipo == "grupo":
+            grupo_val = str(descricao).strip()
+        else:
+            grupo_val = str(item.get("grupo") or item.get("Grupo") or item.get("grupo_hierarquico") or "").strip()
 
         normalized.append(
             {
                 "item": str(item_number),
+                "tipo": str(tipo).strip(),
+                "banco": str(banco).strip(),
                 "codigo": str(codigo),
-                "grupo": str(item.get("Grupo") or item.get("grupo") or item.get("grupo_hierarquico") or "").strip() or None,
+                "grupo": grupo_val or None,
                 "descricao": str(descricao).strip(),
                 "unidade": str(unidade).strip() or "un",
                 "quantidade": quantidade,
@@ -377,34 +423,73 @@ async def process_selected_table(
     t0 = time.perf_counter()
     client = _get_client()
 
+    EXTRACTION_SYSTEM_PROMPT = (
+        "Você é um Extrator de Dados Analíticos de Engenharia. Você receberá imagens de planilhas de orçamento. Sua tarefa é transcrever os dados com 100% de precisão visual e matemática.\n\n"
+        "REGRA 1 - LEITURA VISUAL: Leia a tabela da ESQUERDA para a DIREITA, acompanhando a linha visual da grade. Nunca misture dados de uma linha com a de baixo.\n"
+        "REGRA 2 - IDENTIFICAÇÃO DE PADRÃO: As colunas seguem esta ordem lógica: [ITEM] -> [DESCRIÇÃO] -> [UNIDADE (ex: M, M2, UN, CHP)] -> [QUANTIDADE] -> [PREÇO UNITÁRIO] -> [PREÇO TOTAL].\n"
+        "REGRA 3 - ANCORAGEM PELA UNIDADE: Procure a coluna de UNIDADE (sempre letras como UN, M2, Mês). O número que está imediatamente à esquerda ou direita dela é a QUANTIDADE. O valor financeiro maior no final da linha é o TOTAL.\n"
+        "REGRA 4 - RASTREAMENTO MATEMÁTICO (OBRIGATÓRIO): Antes de gerar a saída de uma linha, multiplique internamente [QUANTIDADE] x [PREÇO UNITÁRIO]. Se o resultado não for igual ao [PREÇO TOTAL] (tolerância de R$ 0,50), você alinhou as colunas errado. Corrija o alinhamento antes de formatar o JSON.\n"
+        "REGRA 5 - SANEAMENTO: Remova 'R$' e converta valores para float (ex: '20.308,75' vira 20308.75).\n\n"
+        "Traga APENAS os itens que possuem número de ITEM (ex: 1.1, 2.3). Ignore textos soltos, assinaturas e cabeçalhos."
+    )
+
     system_msg = EXTRACTION_SYSTEM_PROMPT
     user_msg = _build_selected_table_prompt(table_rows, table_page, table_id, table_name)
+    
+    try:
+        base64_image = _pdf_page_to_base64_image(pdf_content, table_page)
+    except Exception as e:
+        logger.warning(f"Falha ao gerar imagem da página {table_page}: {e}")
+        base64_image = None
+
     input_audit = {
         "table_id": table_id,
         "table_name": table_name,
         "page": table_page,
         "rows_count": len(table_rows),
         "rows_truncated": truncate_rows_for_audit(table_rows, max_rows=10),
+        "has_image": bool(base64_image)
     }
 
     try:
+        messages = [
+            {"role": "system", "content": system_msg},
+        ]
+        
+        if base64_image:
+            messages.append({
+                "role": "user",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": f"{EXTRACTION_USER_PROMPT_HEADER}\n\nCONTEXTO DE TEXTO EXTRAÍDO (Pode conter erros de alinhamento, use a imagem como fonte da verdade):\n{user_msg}"
+                    },
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": f"data:image/jpeg;base64,{base64_image}",
+                            "detail": "high"
+                        }
+                    }
+                ]
+            })
+        else:
+            messages.append({
+                "role": "user",
+                "content": f"{EXTRACTION_USER_PROMPT_HEADER}\n\nCONTEXTO DA TABELA:\n{user_msg}"
+            })
+
         response = await client.chat.completions.create(
             model=OPENAI_ORCAMENTO_MODEL,
             temperature=0,
-            max_tokens=2200,
-            response_format={"type": "json_object"},
-            messages=[
-                {"role": "system", "content": system_msg},
-                {
-                    "role": "user",
-                    "content": f"{EXTRACTION_USER_PROMPT_HEADER}\n\nCONTEXTO DA TABELA:\n{user_msg}",
-                },
-            ],
+            max_tokens=3000,
+            response_format={"type": "json_schema", "json_schema": EXTRACTION_JSON_SCHEMA},
+            messages=messages,
         )
         duration_ms = (time.perf_counter() - t0) * 1000
         raw_content = response.choices[0].message.content or "{}"
         parsed = _parse_json_content(raw_content)
-        raw_items = parsed.get("items") if isinstance(parsed, dict) else []
+        raw_items = parsed.get("orcamento_itens") if isinstance(parsed, dict) else []
         normalized_items = _normalize_structured_items(raw_items)
         summary = parsed.get("resumo") if isinstance(parsed, dict) else {}
         if not isinstance(summary, dict):

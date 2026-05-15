@@ -29,6 +29,9 @@ pdfjs.GlobalWorkerOptions.workerSrc = pdfWorkerSrc;
 // --- INTERFACES ---
 interface ItemOrcamento {
   id: number;
+  item?: string;
+  tipo?: string;
+  banco?: string;
   code: string;
   description: string;
   unit: string;
@@ -49,6 +52,8 @@ interface ExtractedTable {
 
 interface StructuredBudgetItem {
   item?: string | number;
+  tipo?: string;
+  banco?: string;
   codigo?: string;
   Código?: string;
   descricao?: string;
@@ -86,6 +91,9 @@ const mapStructuredItemsToValidation = (
 
     return {
       id: index + 1,
+      item: String(item.item ?? ""),
+      tipo: String(item.tipo ?? ""),
+      banco: String(item.banco ?? ""),
       code: String(item.codigo ?? item.Código ?? item.item ?? index + 1).padStart(3, "0"),
       description: String(item.descricao ?? item.Descrição ?? "").trim(),
       unit: String(item.unidade ?? item.Unidade ?? "un").trim() || "un",
@@ -736,8 +744,17 @@ export default function ValidacaoOrcamento() {
                           className="w-4 h-4 text-blue-600 rounded cursor-pointer"
                         />
                       </th>
+                      <th className="px-4 py-3 text-xs font-semibold text-slate-500 uppercase tracking-wider w-20">
+                        Item
+                      </th>
                       <th className="px-4 py-3 text-xs font-semibold text-slate-500 uppercase tracking-wider w-24">
                         Código
+                      </th>
+                      <th className="px-4 py-3 text-xs font-semibold text-slate-500 uppercase tracking-wider w-20">
+                        Banco
+                      </th>
+                      <th className="px-4 py-3 text-xs font-semibold text-slate-500 uppercase tracking-wider w-20">
+                        Tipo
                       </th>
                       <th className="px-4 py-3 text-xs font-semibold text-slate-500 uppercase tracking-wider">
                         Descrição
@@ -776,12 +793,47 @@ export default function ValidacaoOrcamento() {
                         <td className="px-4 py-3">
                           <input
                             type="text"
+                            value={item.item || ""}
+                            onChange={(e) =>
+                              handleChange(item.id, "item", e.target.value)
+                            }
+                            className="w-full bg-transparent font-mono text-xs text-slate-600 focus:outline-none focus:text-blue-600 border-b border-transparent focus:border-blue-500"
+                            placeholder="1.1"
+                          />
+                        </td>
+                        <td className="px-4 py-3">
+                          <input
+                            type="text"
                             value={item.code}
                             onChange={(e) =>
                               handleChange(item.id, "code", e.target.value)
                             }
                             className="w-full bg-transparent font-mono text-xs text-slate-600 focus:outline-none focus:text-blue-600 border-b border-transparent focus:border-blue-500"
+                            placeholder="Código"
                           />
+                        </td>
+                        <td className="px-4 py-3">
+                          <input
+                            type="text"
+                            value={item.banco || ""}
+                            onChange={(e) =>
+                              handleChange(item.id, "banco", e.target.value)
+                            }
+                            className="w-full bg-transparent font-mono text-xs text-slate-600 focus:outline-none focus:text-blue-600 border-b border-transparent focus:border-blue-500"
+                            placeholder="SINAPI"
+                          />
+                        </td>
+                        <td className="px-4 py-3">
+                          <select
+                            value={item.tipo || "item"}
+                            onChange={(e) =>
+                              handleChange(item.id, "tipo", e.target.value)
+                            }
+                            className="w-full bg-transparent text-xs text-slate-600 focus:outline-none focus:text-blue-600 border-b border-transparent focus:border-blue-500"
+                          >
+                            <option value="item">Item</option>
+                            <option value="grupo">Grupo</option>
+                          </select>
                         </td>
                         <td className="px-4 py-3">
                           <input

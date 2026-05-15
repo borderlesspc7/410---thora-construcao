@@ -7,14 +7,16 @@ export interface MockTableOption {
   name: string;
   page: number;
   preview: string;
+  imagem_base64?: string;
 }
 
 interface TableSelectorProps {
   tables: MockTableOption[];
   loading: boolean;
   disabled?: boolean;
-  selectedId?: string | null;
+  selectedIds?: string[];
   onSelect: (table: MockTableOption) => void;
+  onConfirm?: () => void;
 }
 
 function TableCardSkeleton() {
@@ -44,8 +46,9 @@ export const TableSelector: React.FC<TableSelectorProps> = ({
   tables,
   loading,
   disabled = false,
-  selectedId = null,
+  selectedIds = [],
   onSelect,
+  onConfirm,
 }) => {
   if (loading) {
     return (
@@ -63,64 +66,91 @@ export const TableSelector: React.FC<TableSelectorProps> = ({
   }
 
   return (
-    <div
-      className={`mt-8 grid w-full max-w-5xl grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 ${
-        disabled ? "pointer-events-none opacity-60" : ""
-      }`}
-      role="list"
-      aria-label="Tabelas detectadas no documento"
-      aria-busy={disabled}
-    >
-      {tables.map((table) => (
-        <article
-          key={table.id}
-          role="listitem"
-          className={`flex flex-col rounded-2xl border p-5 shadow-sm transition hover:border-slate-300 hover:shadow-md ${
-            selectedId === table.id
-              ? "border-blue-500 bg-blue-50/60 ring-1 ring-blue-500"
-              : "border-slate-200 bg-white"
-          }`}
-          aria-labelledby={`table-name-${table.id}`}
-          aria-label={`Card de tabela: ${table.name}, página ${table.page}`}
-        >
-          <div className="mb-4 flex items-start gap-3">
-            <div
-              className="flex h-12 w-12 shrink-0 items-center justify-center rounded-lg border border-slate-200 bg-slate-50"
-              aria-hidden="true"
+    <div className="w-full max-w-5xl">
+      <div
+        className={`mt-8 grid w-full grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 ${
+          disabled ? "pointer-events-none opacity-60" : ""
+        }`}
+        role="list"
+        aria-label="Tabelas detectadas no documento"
+        aria-busy={disabled}
+      >
+        {tables.map((table) => {
+          const isSelected = selectedIds.includes(table.id);
+          return (
+            <article
+              key={table.id}
+              role="listitem"
+              className={`flex flex-col rounded-2xl border p-5 shadow-sm transition hover:border-slate-300 hover:shadow-md cursor-pointer ${
+                isSelected
+                  ? "border-blue-500 bg-blue-50/60 ring-1 ring-blue-500"
+                  : "border-slate-200 bg-white"
+              }`}
+              onClick={() => onSelect(table)}
+              aria-labelledby={`table-name-${table.id}`}
+              aria-label={`Card de tabela: ${table.name}, página ${table.page}`}
             >
-              <Table2 className="h-6 w-6 text-slate-600" />
-            </div>
-            <div className="min-w-0 flex-1">
-              <h3
-                id={`table-name-${table.id}`}
-                className="font-semibold leading-snug text-slate-900"
-              >
-                {table.name}
-              </h3>
-              <p className="mt-1 text-xs font-medium uppercase tracking-wide text-slate-500">
-                Página {table.page}
-              </p>
-            </div>
-          </div>
+              <div className="mb-4 flex items-start gap-3">
+                <div
+                  className="flex h-12 w-12 shrink-0 items-center justify-center rounded-lg border border-slate-200 bg-slate-50"
+                  aria-hidden="true"
+                >
+                  <Table2 className="h-6 w-6 text-slate-600" />
+                </div>
+                <div className="min-w-0 flex-1">
+                  <h3
+                    id={`table-name-${table.id}`}
+                    className="font-semibold leading-snug text-slate-900"
+                  >
+                    {table.name}
+                  </h3>
+                  <p className="mt-1 text-xs font-medium uppercase tracking-wide text-slate-500">
+                    Página {table.page}
+                  </p>
+                </div>
+                <div className="flex shrink-0">
+                  <input
+                    type="checkbox"
+                    checked={isSelected}
+                    readOnly
+                    className="h-5 w-5 rounded border-slate-300 text-blue-600 focus:ring-blue-500 cursor-pointer"
+                  />
+                </div>
+              </div>
 
-          <div
-            className="mb-5 flex min-h-18 flex-1 rounded-lg border border-slate-100 bg-slate-50/80 p-3 font-mono text-xs leading-relaxed text-slate-600"
-            aria-label={`Prévia do conteúdo: ${table.preview}`}
-          >
-            <p className="line-clamp-4">{table.preview}</p>
-          </div>
-
+              {table.imagem_base64 ? (
+                <div className="mb-5 flex flex-1 justify-center rounded-lg border border-slate-100 bg-slate-50/80 p-2 overflow-hidden">
+                  <img
+                    src={`data:image/png;base64,${table.imagem_base64}`}
+                    alt={`Print da tabela ${table.name}`}
+                    className="max-h-32 object-contain"
+                  />
+                </div>
+              ) : (
+                <div
+                  className="mb-5 flex min-h-18 flex-1 rounded-lg border border-slate-100 bg-slate-50/80 p-3 font-mono text-xs leading-relaxed text-slate-600"
+                  aria-label={`Prévia do conteúdo: ${table.preview}`}
+                >
+                  <p className="line-clamp-4">{table.preview}</p>
+                </div>
+              )}
+            </article>
+          );
+        })}
+      </div>
+      
+      {onConfirm && tables.length > 0 && (
+        <div className="mt-6 flex justify-end">
           <button
             type="button"
-            className={`${btnPrimary} mt-auto w-full justify-center`}
-            onClick={() => onSelect(table)}
-            disabled={disabled}
-            aria-label={`Selecionar para orçamento: ${table.name}, página ${table.page}`}
+            className={`${btnPrimary} px-8 py-3 text-sm font-semibold shadow-sm`}
+            onClick={onConfirm}
+            disabled={disabled || selectedIds.length === 0}
           >
-            Selecionar para Orçamento
+            Processar {selectedIds.length} tabela{selectedIds.length !== 1 ? 's' : ''} com IA
           </button>
-        </article>
-      ))}
+        </div>
+      )}
     </div>
   );
 };

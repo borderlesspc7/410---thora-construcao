@@ -143,9 +143,12 @@ export const detectOrcamentoTables = async (uploadId: string) => {
       tables_found: number;
       options: {
         id: string;
-        nome_tabela: string;
-        preview_texto: string;
-        num_pagina: number;
+        nome_tabela?: string;
+        preview_texto?: string;
+        num_pagina?: number;
+        pagina?: number;
+        coordenadas?: number[];
+        imagem_base64?: string;
       }[];
       mock_fallback?: boolean;
     };
@@ -161,12 +164,16 @@ export const detectOrcamentoTables = async (uploadId: string) => {
   }
 };
 
-/** Processa a tabela escolhida (GPT-4o quando configurado no backend). */
-export const processOrcamentoConfirmed = async (uploadId: string, tableId: string) => {
+/** Processa as tabelas escolhidas (GPT-4o quando configurado no backend). */
+export const processOrcamentoConfirmed = async (uploadId: string, tableIds: string | string[]) => {
   try {
+    const payload = Array.isArray(tableIds) 
+      ? { upload_id: uploadId, table_ids: tableIds }
+      : { upload_id: uploadId, table_id: tableIds, table_ids: [tableIds] };
+      
     const response = await apiClient.post(
       "/api/orcamentos/process-confirmed",
-      { upload_id: uploadId, table_id: tableId },
+      payload,
       { timeout: 600000 },
     );
     return response.data as {

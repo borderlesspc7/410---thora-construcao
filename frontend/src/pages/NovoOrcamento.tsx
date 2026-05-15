@@ -19,7 +19,7 @@ export default function NovoOrcamento() {
   const [phase, setPhase] = useState<FlowPhase>("pick_file");
   const [uploadId, setUploadId] = useState<string | null>(null);
   const [tableOptions, setTableOptions] = useState<MockTableOption[]>([]);
-  const [selectedTableId, setSelectedTableId] = useState<string | null>(null);
+  const [selectedTableIds, setSelectedTableIds] = useState<string[]>([]);
   const [errorMessage, setErrorMessage] = useState<string>("");
 
   const onDrop = useCallback((acceptedFiles: File[]) => {
@@ -28,7 +28,7 @@ export default function NovoOrcamento() {
       setPhase("pick_file");
       setUploadId(null);
       setTableOptions([]);
-      setSelectedTableId(null);
+      setSelectedTableIds([]);
       setErrorMessage("");
     }
   }, []);
@@ -47,7 +47,7 @@ export default function NovoOrcamento() {
     setFile(null);
     setUploadId(null);
     setTableOptions([]);
-    setSelectedTableId(null);
+    setSelectedTableIds([]);
     setErrorMessage("");
     setPhase("pick_file");
   };
@@ -67,9 +67,10 @@ export default function NovoOrcamento() {
       const mappedOptions: MockTableOption[] = (detectResponse.options || []).map(
         (option) => ({
           id: option.id,
-          name: option.nome_tabela,
-          page: option.num_pagina,
-          preview: option.preview_texto,
+          name: option.nome_tabela || `Página ${option.pagina}`,
+          page: option.num_pagina || option.pagina,
+          preview: option.preview_texto || "Visualização disponível via imagem.",
+          imagem_base64: option.imagem_base64,
         }),
       );
 
@@ -86,20 +87,28 @@ export default function NovoOrcamento() {
     }
   };
 
-  const handleSelectTable = async (table: MockTableOption) => {
-    if (!file || !uploadId) return;
+  const handleSelectTable = (table: MockTableOption) => {
+    setSelectedTableIds((prev) => 
+      prev.includes(table.id)
+        ? prev.filter((id) => id !== table.id)
+        : [...prev, table.id]
+    );
+  };
 
-    setSelectedTableId(table.id);
+  const handleConfirmSelection = async () => {
+    if (!file || !uploadId || selectedTableIds.length === 0) return;
+
     setPhase("processing_ai");
-    toast.success("Tabela selecionada. Iniciando processamento de IA...");
+    toast.success(`${selectedTableIds.length} tabela(s) selecionada(s). Iniciando processamento de IA...`);
 
     try {
-      const result = await processOrcamentoConfirmed(uploadId, table.id);
+      // O backend agora suporta table_ids
+      const result = await processOrcamentoConfirmed(uploadId, selectedTableIds);
       navigate(`/validacao/${uploadId}`, {
         state: {
           file,
           uploadId: result.upload_id ?? uploadId,
-          selectedTableId: table.id,
+          selectedTableIds: selectedTableIds,
           extractedData: result.tables ?? [],
           structuredData: {
             items: result.structured_items ?? result.items ?? [],
@@ -234,10 +243,9 @@ export default function NovoOrcamento() {
               tables={tableOptions}
               loading={phase === "uploading" || phase === "detecting"}
               disabled={phase === "processing_ai"}
-              selectedId={selectedTableId}
-              onSelect={(table) => {
-                void handleSelectTable(table);
-              }}
+              selectedIds={selectedTableIds}
+              onSelect={handleSelectTable}
+              onConfirm={handleConfirmSelection}
             />
           )}
         </div>

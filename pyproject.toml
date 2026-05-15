@@ -63,7 +63,10 @@ dependencies = [
   "typing-inspection==0.4.2",
   "typing_extensions==4.15.0",
   "tzdata==2025.3",
-  "urllib3==2.6.3"
+  "urllib3==2.6.3",
+  "camelot-py[cv]",
+  "PyMuPDF",
+  "opencv-python-headless"
 ]
 
 [build-system]

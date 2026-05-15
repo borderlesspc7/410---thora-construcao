@@ -2,6 +2,10 @@ export type OrcamentoStatus = "processing" | "completed" | "error";
 
 export type OrcamentoItem = {
   id: string;
+  item?: string;
+  tipo?: string;
+  banco?: string;
+  codigo?: string;
   descricao?: string;
   description?: string;
   quantidade?: number;
@@ -12,6 +16,7 @@ export type OrcamentoItem = {
   unitValue?: number;
   valor_total?: number;
   totalValue?: number;
+  grupo?: string;
 };
 
 export type Orcamento = {
