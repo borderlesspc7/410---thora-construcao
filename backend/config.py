@@ -68,7 +68,10 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 # Fluxo Orçamento Analítico (GPT-4o) — chave sempre via .env (nunca no código)
 OPENAI_ORCAMENTO_MODEL = os.getenv("OPENAI_ORCAMENTO_MODEL", "gpt-4o")
-OPENAI_ORCAMENTO_TIMEOUT_SECONDS = float(os.getenv("OPENAI_ORCAMENTO_TIMEOUT", "120"))
+_default_orcamento_timeout = "55" if IS_VERCEL else "120"
+OPENAI_ORCAMENTO_TIMEOUT_SECONDS = float(
+    os.getenv("OPENAI_ORCAMENTO_TIMEOUT", _default_orcamento_timeout)
+)
 
 # AI local provider (Ollama)
 _default_ollama_enabled = "false" if IS_VERCEL else "true"
@@ -80,10 +83,10 @@ OLLAMA_ENABLED = os.getenv("OLLAMA_ENABLED", _default_ollama_enabled).lower() in
 )
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen2.5:7b-instruct")
-_default_ollama_timeout = "12" if IS_VERCEL else "45"
+_default_ollama_timeout = "55" if IS_VERCEL else "45"
 OLLAMA_TIMEOUT_SECONDS = float(os.getenv("OLLAMA_TIMEOUT_SECONDS", _default_ollama_timeout))
 
-_default_ai_provider_timeout = "12" if IS_VERCEL else "45"
+_default_ai_provider_timeout = "55" if IS_VERCEL else "45"
 AI_PROVIDER_TIMEOUT_SECONDS = float(
     os.getenv("AI_PROVIDER_TIMEOUT_SECONDS", _default_ai_provider_timeout)
 )

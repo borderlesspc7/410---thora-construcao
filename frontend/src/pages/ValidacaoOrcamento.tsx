@@ -47,6 +47,55 @@ interface ExtractedTable {
   rows: TableRow[][];
 }
 
+interface StructuredBudgetItem {
+  item?: string | number;
+  codigo?: string;
+  Código?: string;
+  descricao?: string;
+  Descrição?: string;
+  unidade?: string;
+  Unidade?: string;
+  quantidade?: number | string;
+  Quantidade?: number | string;
+  valor_unitario?: number | string;
+  "Valor Unitário"?: number | string;
+  valor_total?: number | string;
+  Total?: number | string;
+}
+
+const toNumber = (value: unknown): number => {
+  if (typeof value === "number") return value;
+  if (typeof value !== "string") return 0;
+  const compact = value.replace("R$", "").replace(/\s/g, "");
+  const normalized =
+    compact.includes(",") && compact.includes(".")
+      ? compact.replace(/\./g, "").replace(",", ".")
+      : compact.includes(",")
+        ? compact.replace(",", ".")
+        : compact;
+  const parsed = Number.parseFloat(normalized);
+  return Number.isFinite(parsed) ? parsed : 0;
+};
+
+const mapStructuredItemsToValidation = (
+  items: StructuredBudgetItem[],
+): ItemOrcamento[] => {
+  return items.map((item, index) => {
+    const quantity = toNumber(item.quantidade ?? item.Quantidade);
+    const unitPrice = toNumber(item.valor_unitario ?? item["Valor Unitário"]);
+
+    return {
+      id: index + 1,
+      code: String(item.codigo ?? item.Código ?? item.item ?? index + 1).padStart(3, "0"),
+      description: String(item.descricao ?? item.Descrição ?? "").trim(),
+      unit: String(item.unidade ?? item.Unidade ?? "un").trim() || "un",
+      qty: quantity,
+      unitPrice,
+      selected: false,
+    };
+  });
+};
+
 export default function ValidacaoOrcamento() {
   const navigate = useNavigate();
   const location = useLocation(); // <--- Para pegar o arquivo enviado
@@ -85,6 +134,16 @@ export default function ValidacaoOrcamento() {
     }
 
     // Carregar dados extraídos da API
+    const structuredItems = location.state?.structuredData?.items as
+      | StructuredBudgetItem[]
+      | undefined;
+
+    if (Array.isArray(structuredItems) && structuredItems.length > 0) {
+      setItems(mapStructuredItemsToValidation(structuredItems));
+      setIsLoading(false);
+      return;
+    }
+
     if (location.state?.extractedData) {
       const extractedData: ExtractedTable[] = location.state.extractedData;
 

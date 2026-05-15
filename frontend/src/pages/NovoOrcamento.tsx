@@ -1,103 +1,34 @@
-import React, { useState, useCallback, useRef, useEffect } from "react";
+import React, { useCallback, useState } from "react";
 import { useDropzone, DropzoneOptions } from "react-dropzone";
-import {
-  UploadCloud,
-  FileText,
-  X,
-  AlertCircle,
-  Loader2,
-} from "lucide-react";
+import { AlertCircle, FileText, Loader2, UploadCloud, X } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { toast } from "sonner";
 import { btnPrimary } from "../components/ui/buttonClasses";
+import { TableSelector, type MockTableOption } from "../components/TableSelector";
 import {
-  TableSelector,
-  type MockTableOption,
-} from "../components/TableSelector";
+  detectOrcamentoTables,
+  processOrcamentoConfirmed,
+  uploadPDF,
+} from "../services/api";
 
-const mockTables: MockTableOption[] = [
-  {
-    id: "1",
-    name: "Planilha de Quantitativos",
-    page: 2,
-    preview: "1.1 | Escavação Mecânica | m3 | 450,00...",
-  },
-  {
-    id: "2",
-    name: "Orçamento Analítico Estimado",
-    page: 5,
-    preview: "Item | Descrição | Unid | Qtd | Valor...",
-  },
-  {
-    id: "3",
-    name: "Cronograma de Desembolso",
-    page: 15,
-    preview: "Etapa | Mês 1 | Mês 2 | Mês 3...",
-  },
-];
-
-type FlowPhase =
-  | "pick_file"
-  | "uploading"
-  | "analyzing_tables"
-  | "selecting_table"
-  | "processing_ai";
-
-/** Linhas compatíveis com o parser da tela de validação (modo demonstração). */
-function buildMockExtractedData(table: MockTableOption) {
-  const rows = [
-    [
-      "Item",
-      "Código",
-      "Banco",
-      "Descrição",
-      "Unidade",
-      "Quantidade",
-      "Valor unitário",
-      "Valor total",
-    ],
-    [
-      "1",
-      "001",
-      "",
-      `Prévia — ${table.name}`,
-      "un",
-      "2",
-      "150,00",
-      "300,00",
-    ],
-    ["2", "002", "", "Outro serviço (mock)", "m", "10", "25,50", "255,00"],
-  ];
-  return [
-    {
-      page: table.page,
-      table_id: `mock-table-${table.id}`,
-      rows,
-    },
-  ];
-}
+type FlowPhase = "pick_file" | "uploading" | "detecting" | "selecting_table" | "processing_ai";
 
 export default function NovoOrcamento() {
   const navigate = useNavigate();
   const [file, setFile] = useState<File | null>(null);
   const [phase, setPhase] = useState<FlowPhase>("pick_file");
   const [uploadId, setUploadId] = useState<string | null>(null);
+  const [tableOptions, setTableOptions] = useState<MockTableOption[]>([]);
+  const [selectedTableId, setSelectedTableId] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string>("");
-  const processingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  useEffect(() => {
-    return () => {
-      if (processingTimerRef.current) {
-        clearTimeout(processingTimerRef.current);
-      }
-    };
-  }, []);
 
   const onDrop = useCallback((acceptedFiles: File[]) => {
-    if (acceptedFiles && acceptedFiles.length > 0) {
+    if (acceptedFiles.length > 0) {
       setFile(acceptedFiles[0]);
       setPhase("pick_file");
       setUploadId(null);
+      setTableOptions([]);
+      setSelectedTableId(null);
       setErrorMessage("");
     }
   }, []);
@@ -114,78 +45,87 @@ export default function NovoOrcamento() {
   const removeFile = (e: React.MouseEvent) => {
     e.stopPropagation();
     setFile(null);
-    setPhase("pick_file");
     setUploadId(null);
+    setTableOptions([]);
+    setSelectedTableId(null);
     setErrorMessage("");
-  };
-
-  const handleAfterUpload = async () => {
-    if (!file) return;
-    setErrorMessage("");
-
-    const id =
-      typeof crypto !== "undefined" && crypto.randomUUID
-        ? crypto.randomUUID()
-        : `mock-${Date.now()}`;
-    setUploadId(id);
-
-    setPhase("analyzing_tables");
-    await new Promise((r) => setTimeout(r, 1500));
-
-    setPhase("selecting_table");
+    setPhase("pick_file");
   };
 
   const handleStartFlow = async () => {
     if (!file) return;
     setErrorMessage("");
+
     try {
       setPhase("uploading");
-      await new Promise((r) => setTimeout(r, 1200));
-      await handleAfterUpload();
+      const uploadResponse = await uploadPDF(file);
+      const currentUploadId = uploadResponse.upload_id as string;
+      setUploadId(currentUploadId);
+
+      setPhase("detecting");
+      const detectResponse = await detectOrcamentoTables(currentUploadId);
+      const mappedOptions: MockTableOption[] = (detectResponse.options || []).map(
+        (option) => ({
+          id: option.id,
+          name: option.nome_tabela,
+          page: option.num_pagina,
+          preview: option.preview_texto,
+        }),
+      );
+
+      setTableOptions(mappedOptions);
+      setPhase("selecting_table");
+      toast.success("Tabelas encontradas", {
+        description: "Selecione a tabela correta para continuar.",
+      });
     } catch (error: unknown) {
-      const msg =
-        error instanceof Error ? error.message : "Erro ao preparar o fluxo";
+      const msg = error instanceof Error ? error.message : "Erro ao processar arquivo";
       setErrorMessage(msg);
       setPhase("pick_file");
-      toast.error("Falha", { description: msg });
+      toast.error("Falha no fluxo", { description: msg });
     }
   };
 
-  const handleSelectTable = (table: MockTableOption) => {
+  const handleSelectTable = async (table: MockTableOption) => {
     if (!file || !uploadId) return;
 
+    setSelectedTableId(table.id);
+    setPhase("processing_ai");
     toast.success("Tabela selecionada. Iniciando processamento de IA...");
 
-    setPhase("processing_ai");
-    if (processingTimerRef.current) {
-      clearTimeout(processingTimerRef.current);
-    }
-    processingTimerRef.current = setTimeout(() => {
-      processingTimerRef.current = null;
+    try {
+      const result = await processOrcamentoConfirmed(uploadId, table.id);
       navigate(`/validacao/${uploadId}`, {
         state: {
           file,
-          uploadId,
+          uploadId: result.upload_id ?? uploadId,
           selectedTableId: table.id,
-          extractedData: buildMockExtractedData(table),
+          extractedData: result.tables ?? [],
+          structuredData: {
+            items: result.structured_items ?? result.items ?? [],
+            resumo: result.resumo,
+          },
+          iaMetadata: result.ia_metadata,
         },
       });
-    }, 2000);
+    } catch (error: unknown) {
+      const msg = error instanceof Error ? error.message : "Erro ao processar com IA";
+      setErrorMessage(msg);
+      setPhase("selecting_table");
+      toast.error("Falha ao processar", { description: msg });
+    }
   };
 
-  const showUploadProgress = phase === "uploading";
-  const showTablePhase =
-    phase === "analyzing_tables" ||
-    phase === "selecting_table" ||
-    phase === "processing_ai";
+  const showUploadProgress = phase === "uploading" || phase === "detecting";
+  const showTablePhase = phase === "detecting" || phase === "selecting_table" || phase === "processing_ai";
 
   return (
     <div className="flex flex-1 flex-col items-center overflow-auto bg-slate-50 px-6 py-12">
       <h1 className="text-2xl font-semibold text-slate-900">Novo Orçamento</h1>
 
       <p className="mt-2 max-w-xl text-center text-slate-600">
-        Modo demonstração: após o envio simulado, escolha uma tabela para seguir para a
-        validação (sem chamadas ao backend).
+        Envie o PDF, escolha a tabela do orçamento e processe com a OpenAI antes da
+        validação.
       </p>
 
       {!file ? (
@@ -197,6 +137,7 @@ export default function NovoOrcamento() {
                 ? "border-blue-500 bg-blue-50"
                 : "border-blue-200 bg-white hover:border-blue-400 hover:bg-blue-50/30"
             }`}
+          aria-label="Área para selecionar arquivo PDF"
         >
           <input {...(getInputProps() as any)} aria-label="Selecionar arquivo PDF" />
 
@@ -213,9 +154,7 @@ export default function NovoOrcamento() {
 
           <p className="text-sm text-slate-500">ou clique para selecionar</p>
 
-          <p className="mt-2 text-xs text-slate-400">
-            Suporta arquivos PDF de até 50MB
-          </p>
+          <p className="mt-2 text-xs text-slate-400">Suporta arquivos PDF de até 50MB</p>
         </div>
       ) : (
         <div className="mt-8 flex w-full max-w-5xl flex-col items-stretch">
@@ -247,10 +186,14 @@ export default function NovoOrcamento() {
               <div className="mt-4 border-t border-slate-100 pt-4" role="status" aria-live="polite">
                 <div className="mb-2 flex items-center gap-2 text-sm font-medium text-blue-600">
                   <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
-                  Enviando arquivo…
+                  {phase === "uploading" ? "Enviando arquivo…" : "Detectando tabelas…"}
                 </div>
                 <div className="h-1.5 w-full overflow-hidden rounded-full bg-slate-100">
-                  <div className="h-full w-2/3 animate-pulse rounded-full bg-blue-600" />
+                  <div
+                    className={`h-full rounded-full bg-blue-600 ${
+                      phase === "uploading" ? "w-1/3 animate-pulse" : "w-2/3 animate-pulse"
+                    }`}
+                  />
                 </div>
               </div>
             )}
@@ -280,18 +223,21 @@ export default function NovoOrcamento() {
               type="button"
               onClick={() => void handleStartFlow()}
               className={`${btnPrimary} mt-6 w-full max-w-2xl self-center py-3`}
-              aria-label="Continuar: simular envio e escolher tabela"
+              aria-label="Enviar arquivo e detectar tabelas"
             >
-              Continuar
+              Enviar e escolher tabela
             </button>
           )}
 
           {showTablePhase && (
             <TableSelector
-              tables={mockTables}
-              loading={phase === "analyzing_tables" || phase === "uploading"}
+              tables={tableOptions}
+              loading={phase === "uploading" || phase === "detecting"}
               disabled={phase === "processing_ai"}
-              onSelect={handleSelectTable}
+              selectedId={selectedTableId}
+              onSelect={(table) => {
+                void handleSelectTable(table);
+              }}
             />
           )}
         </div>

@@ -1,0 +1,18 @@
+{
+  "table_candidates": [
+    {
+      "id": "table-1",
+      "nome_tabela": "Resumo Geral de Pre\u00e7os",
+      "num_pagina": 2,
+      "preview_texto": "ITEM DESCRI\u00c7\u00c3O % CUSTO TOTAL\n1 SERVI\u00c7OS PRELIMINARES E CANTEIRO 10,09% R$ 396.490,67\n2 ADMINISTRA\u00c7\u00c3O LOCAL DA OBRA 24,97% R$ 981.501,66\n3 SERVI\u00c7OS PRELIMINARES - CONTROLE TECNOL\u00d3GICO 1,86% R$ 73.280,56\n4 TERRAPLENAGEM 59,70% R$ 2.346.837,88\n5 TAXAS DE RES\u00cdDUOS CONSTRU\u00c7\u00c3O CIVIL-URE 3,39% R$ 133.076,33\nOR\u00c7AMENTO PRE\u00c7O TOTAL COM BDI 100,00% R$ 3.931.187,10"
+    },
+    {
+      "id": "table-2",
+      "nome_tabela": "Or\u00e7amento Detalhado",
+      "num_pagina": 3,
+      "preview_texto": "Item Fonte C\u00f3digo Descri\u00e7\u00e3o Unidade Quantidade Pre\u00e7o Unit\u00e1rio Pre\u00e7o Total S/ BDI Percentual BDI (%) Pre\u00e7o Total C/ BDI\n1.1.1 SICRO-EQ E9665 C KW AVALO MEC\u00c2NICO COM SEMIRREBOQUE COM CAPACIDADE DE 20 T - 276 CHP 44,00 422,33 R$ 18.582,59 21,22% R$ 22.525,82"
+    }
+  ],
+  "uploadId": "07371984-091f-4578-bf42-f2375640ca8c",
+  "userId": "eyJhbGciOiJSUzI1NiIs"
+}

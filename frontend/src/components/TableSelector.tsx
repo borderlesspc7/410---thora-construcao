@@ -13,6 +13,7 @@ interface TableSelectorProps {
   tables: MockTableOption[];
   loading: boolean;
   disabled?: boolean;
+  selectedId?: string | null;
   onSelect: (table: MockTableOption) => void;
 }
 
@@ -43,6 +44,7 @@ export const TableSelector: React.FC<TableSelectorProps> = ({
   tables,
   loading,
   disabled = false,
+  selectedId = null,
   onSelect,
 }) => {
   if (loading) {
@@ -73,7 +75,11 @@ export const TableSelector: React.FC<TableSelectorProps> = ({
         <article
           key={table.id}
           role="listitem"
-          className="flex flex-col rounded-2xl border border-slate-200 bg-white p-5 shadow-sm transition hover:border-slate-300 hover:shadow-md"
+          className={`flex flex-col rounded-2xl border p-5 shadow-sm transition hover:border-slate-300 hover:shadow-md ${
+            selectedId === table.id
+              ? "border-blue-500 bg-blue-50/60 ring-1 ring-blue-500"
+              : "border-slate-200 bg-white"
+          }`}
           aria-labelledby={`table-name-${table.id}`}
           aria-label={`Card de tabela: ${table.name}, página ${table.page}`}
         >
@@ -98,7 +104,7 @@ export const TableSelector: React.FC<TableSelectorProps> = ({
           </div>
 
           <div
-            className="mb-5 flex min-h-[4.5rem] flex-1 rounded-lg border border-slate-100 bg-slate-50/80 p-3 font-mono text-xs leading-relaxed text-slate-600"
+            className="mb-5 flex min-h-18 flex-1 rounded-lg border border-slate-100 bg-slate-50/80 p-3 font-mono text-xs leading-relaxed text-slate-600"
             aria-label={`Prévia do conteúdo: ${table.preview}`}
           >
             <p className="line-clamp-4">{table.preview}</p>

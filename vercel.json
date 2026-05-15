@@ -15,8 +15,6 @@
         "distDir": "dist"
       }
     }
-<<<<<<< Updated upstream
-=======
   ],
   "routes": [
     {
@@ -40,20 +38,11 @@
       "dest": "/api/index.py"
     },
     {
-      "src": "/assets/(.*)",
-      "dest": "/frontend/assets/$1"
-    },
-    {
-      "src": "/(favicon.ico|vite.svg|robots.txt|manifest.json)",
-      "dest": "/frontend/$1"
-    },
-    {
       "handle": "filesystem"
     },
     {
       "src": "/(.*)",
-      "dest": "/frontend/index.html"
+      "dest": "/frontend/dist/index.html"
     }
->>>>>>> Stashed changes
   ]
 }

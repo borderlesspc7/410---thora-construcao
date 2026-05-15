@@ -45,7 +45,7 @@ from config import (
 from firebase_service import OrcamentoFirestore
 from budget_parser import BudgetParser
 from firebase_admin import auth as firebase_auth
-from services.openai_service import identify_tables, process_selected_table
+from services.openai_service import identify_tables, process_selected_table, OpenAIServiceError
 from services.ai_audit_logger import log_ai_exchange
 
 try:
@@ -629,6 +629,32 @@ def _find_table_candidate(all_tables: List[Dict], table_id: str) -> Dict | None:
     return None
 
 
+def _find_table_for_page(all_tables: List[Dict], page_number: int) -> Dict | None:
+    page_tables = [table for table in all_tables if int(table.get("page") or 0) == int(page_number)]
+    if not page_tables:
+        return None
+
+    def sort_key(table: Dict[str, Any]) -> tuple[int, int]:
+        rows = table.get("rows") or []
+        columns = table.get("columns") or 0
+        return (len(rows), int(columns))
+
+    return sorted(page_tables, key=sort_key, reverse=True)[0]
+
+
+def _guess_table_name_from_preview(preview_text: str, fallback_index: int) -> str:
+    text = preview_text.lower()
+    if "orçamento sintético" in text or "orcamento sintetico" in text:
+        return "Orçamento Sintético"
+    if "quantitativo" in text or "planilha" in text:
+        return "Planilha de Quantitativos"
+    if "composi" in text:
+        return "Composições"
+    if "cronograma" in text:
+        return "Cronograma de Desembolso"
+    return f"Tabela {fallback_index}"
+
+
 def _rows_from_analytic_items(items: List[Dict]) -> List[List[Any]]:
     header = ["Descrição", "Quantidade", "Unidade", "Valor Unitário", "Valor Total"]
     out: List[List[Any]] = [header]
@@ -1061,11 +1087,8 @@ async def detect_orcamento_tables(
 ):
     """
     Lista candidatos a tabela orçamentária para o usuário escolher antes da extração final.
-    Usa pdfplumber para prévias; se não houver tabelas, retorna opções simuladas (mock).
+    Usa GPT-4o para analisar apenas as páginas iniciais do PDF.
     """
-    if not pdfplumber:
-        raise HTTPException(status_code=500, detail="pdfplumber não está instalado")
-
     upload_id = _validate_upload_id(upload_id)
     file_path = UPLOAD_FOLDER / f"{upload_id}.pdf"
     if not file_path.exists():
@@ -1079,38 +1102,65 @@ async def detect_orcamento_tables(
         raise HTTPException(status_code=403, detail="Acesso negado")
 
     try:
-        tables = _extract_tables_from_pdf_path(file_path)
+        pdf_bytes = file_path.read_bytes()
+        options = await identify_tables(pdf_bytes)
+    except OpenAIServiceError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
     except Exception as exc:
-        logger.error("detect-tables: falha na extração bruta: %s", exc)
+        logger.error("detect-tables: falha na identificação: %s", exc)
         raise HTTPException(status_code=500, detail=f"Erro ao analisar PDF: {exc}") from exc
 
-    if tables:
-        options = [
-            {
-                "id": t["table_id"],
-                "preview_texto": _preview_text_for_table_rows(t.get("rows") or []),
-                "num_pagina": t.get("page", 1),
-            }
-            for t in tables
-        ]
-    else:
-        pdf_bytes = file_path.read_bytes()
-        options = identify_tables(pdf_bytes)
+    options = [
+        {
+            "id": option["id"],
+            "nome_tabela": option["nome_tabela"],
+            "num_pagina": option["num_pagina"],
+            "preview_texto": option["preview_texto"],
+        }
+        for option in options
+        if option.get("preview_texto") or option.get("nome_tabela")
+    ]
 
-    log_ai_exchange(
-        operation="detect_tables",
-        provider="mock+pdfplumber",
-        model="identify_tables_stub",
-        input_payload={"upload_id": upload_id, "tables_found": len(tables)},
-        output_payload={"options": [{"id": o["id"], "num_pagina": o["num_pagina"]} for o in options]},
-    )
+    fallback_used = False
+    if not options:
+        fallback_used = True
+        try:
+            extracted_tables = _extract_tables_from_pdf_path(file_path)
+        except Exception as exc:
+            logger.error("detect-tables: fallback local falhou: %s", exc)
+            extracted_tables = []
+
+        for index, table in enumerate(extracted_tables[:8], start=1):
+            preview = _preview_text_for_table_rows(table.get("rows") or [])
+            options.append(
+                {
+                    "id": f"local-{table.get('table_id') or index}",
+                    "nome_tabela": _guess_table_name_from_preview(preview, index),
+                    "num_pagina": int(table.get("page") or 1),
+                    "preview_texto": preview,
+                }
+            )
+
+        log_ai_exchange(
+            operation="detect_tables",
+            provider="local-fallback",
+            model="pdfplumber",
+            input_payload={"upload_id": upload_id, "reason": "openai_returned_empty"},
+            output_payload={"tables_found": len(options)},
+        )
+
+    _OFFLINE_CACHE.setdefault(upload_id, {})
+    _OFFLINE_CACHE[upload_id]["table_candidates"] = options
+    _OFFLINE_CACHE[upload_id]["uploadId"] = upload_id
+    _OFFLINE_CACHE[upload_id]["userId"] = user_id
+    _save_extracted_cache(upload_id, _OFFLINE_CACHE[upload_id])
 
     return {
         "status": "success",
         "upload_id": upload_id,
-        "tables_found": len(tables),
+        "tables_found": len(options),
         "options": options,
-        "mock_fallback": len(tables) == 0,
+        "mock_fallback": fallback_used,
     }
 
 
@@ -1145,11 +1195,8 @@ async def process_orcamento_confirmed(
     user_id: str = Depends(get_current_user_id),
 ):
     """
-    Processa a tabela escolhida com GPT-4o (quando configurado) e persiste orçamento + ia_metadata.
+    Processa a tabela escolhida com GPT-4o e persiste orçamento + ia_metadata.
     """
-    if not pdfplumber:
-        raise HTTPException(status_code=500, detail="pdfplumber não está instalado")
-
     upload_id = _validate_upload_id(payload.upload_id)
     file_path = UPLOAD_FOLDER / f"{upload_id}.pdf"
     if not file_path.exists():
@@ -1169,13 +1216,15 @@ async def process_orcamento_confirmed(
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Erro ao ler PDF: {exc}") from exc
 
-    if not all_tables and payload.table_id.startswith("tbl-mock-"):
-        raise HTTPException(
-            status_code=400,
-            detail="Nenhuma tabela tabular foi detectada neste PDF. Envie um PDF com tabela ou use outro arquivo.",
-        )
+    upload_data = _get_upload_data_from_sources(upload_id) or {}
+    table_candidates = upload_data.get("table_candidates") or []
+    selected_candidate = next((item for item in table_candidates if item.get("id") == payload.table_id), None)
 
-    selected = _find_table_candidate(all_tables, payload.table_id)
+    selected = None
+    if selected_candidate:
+        selected = _find_table_for_page(all_tables, int(selected_candidate.get("num_pagina") or 1))
+    if not selected:
+        selected = _find_table_candidate(all_tables, payload.table_id)
     if not selected:
         raise HTTPException(
             status_code=404,
@@ -1187,55 +1236,78 @@ async def process_orcamento_confirmed(
     resolved_table_id = str(selected.get("table_id") or payload.table_id)
     pdf_bytes = file_path.read_bytes()
 
-    provider_used = "parser:fallback"
-    ai_items: List[Dict[str, Any]] = []
-    ai_resumo: Dict[str, Any] = {}
-
-    if OPENAI_API_KEY.strip():
-        try:
-            ai_dict, provider_used = await process_selected_table(
-                pdf_bytes,
-                resolved_table_id,
-                table_rows=rows,
-                table_page=page,
-            )
-            ai_items = _normalize_analytic_items(ai_dict.get("items") or [])
-            ai_resumo = ai_dict.get("resumo") if isinstance(ai_dict.get("resumo"), dict) else {}
-        except Exception as exc:
-            logger.warning("Falha no processamento OpenAI; usando parser local: %s", exc)
-            provider_used = f"parser:fallback_after_error:{type(exc).__name__}"
-            ai_items = []
-            ai_resumo = {}
+    candidate_name = str((selected_candidate or {}).get("nome_tabela") or "")
 
     parser = BudgetParser()
-    if ai_items:
-        items = ai_items
-        resumo = ai_resumo or {
-            "total_items": len(items),
-            "valor_total": sum(float(i.get("valor_total") or 0) for i in items),
-            "confianca": 0.82,
-            "metodo": "openai_orcamento_analitico",
+    raw_structured_items: List[Dict[str, Any]] = []
+    items: List[Dict[str, Any]] = []
+    resumo: Dict[str, Any] = {}
+    provider_used = "budget_parser"
+    engine_used = "budget_parser"
+
+    try:
+        structured_data, provider_used = await process_selected_table(
+            pdf_bytes,
+            payload.table_id,
+            table_rows=rows,
+            table_page=page,
+            table_name=candidate_name or None,
+        )
+        raw_structured_items = (
+            structured_data.get("items") if isinstance(structured_data, dict) else []
+        ) or []
+        items = _normalize_analytic_items(raw_structured_items)
+        resumo = structured_data.get("resumo") if isinstance(structured_data, dict) else {}
+        if not isinstance(resumo, dict):
+            resumo = {}
+        resumo = {
+            "total_items": int(resumo.get("total_items") or len(items)),
+            "valor_total": float(
+                resumo.get("valor_total")
+                or sum(float(item.get("valor_total") or 0) for item in items)
+            ),
+            "confianca": float(resumo.get("confianca") or 0.82),
+            "metodo": str(resumo.get("metodo") or "gpt-4o"),
         }
-        tables_out = [
-            {
-                "page": page,
-                "table_id": resolved_table_id,
-                "rows": _rows_from_analytic_items(items),
-                "original_rows": len(rows),
-                "columns": len(rows[0]) if rows else 0,
-            }
-        ]
-    else:
+        engine_used = "openai_gpt4o"
+    except OpenAIServiceError as exc:
+        logger.warning("process-confirmed: fallback local após OpenAIServiceError: %s", exc)
         parsed_data = parser.parse_all_tables([selected])
         items = parsed_data.get("items", [])
         resumo = parsed_data.get("resumo", {})
-        tables_out = [selected]
+        raw_structured_items = []
+        provider_used = f"fallback:{exc.code}"
+        engine_used = "budget_parser"
+    except Exception as exc:
+        logger.warning("process-confirmed: fallback local após erro inesperado: %s", exc)
+        parsed_data = parser.parse_all_tables([selected])
+        items = parsed_data.get("items", [])
+        resumo = parsed_data.get("resumo", {})
+        raw_structured_items = []
+        provider_used = f"fallback:unexpected:{type(exc).__name__}"
+        engine_used = "budget_parser"
 
-    engine_used = "openai_gpt4o" if ai_items else "budget_parser"
+    if not items:
+        parsed_data = parser.parse_all_tables([selected])
+        items = parsed_data.get("items", [])
+        resumo = parsed_data.get("resumo", {})
+        engine_used = "budget_parser"
+
+    tables_out = [
+        {
+            "page": page,
+            "table_id": resolved_table_id,
+            "rows": rows,
+            "original_rows": len(rows),
+            "columns": len(rows[0]) if rows else 0,
+        }
+    ]
+
     ia_metadata: Dict[str, Any] = {
         "selected_table_id": payload.table_id,
+        "selected_table_name": candidate_name or None,
         "resolved_table_id": resolved_table_id,
-        "model": OPENAI_ORCAMENTO_MODEL if OPENAI_API_KEY.strip() else "BudgetParser",
+        "model": OPENAI_ORCAMENTO_MODEL,
         "engine_used": engine_used,
         "provider": provider_used,
     }
@@ -1246,7 +1318,11 @@ async def process_orcamento_confirmed(
             upload_id=upload_id,
             filename=filename,
             tables=tables_out,
-            items_data={"items": items, "resumo": resumo},
+            items_data={
+                "items": items,
+                "structured_items": raw_structured_items,
+                "resumo": resumo,
+            },
             ia_metadata=ia_metadata,
         )
     except Exception as e:
@@ -1259,6 +1335,7 @@ async def process_orcamento_confirmed(
         "filename": filename,
         "tables": tables_out,
         "items": items,
+        "structured_items": raw_structured_items,
         "resumo": resumo,
         "uploadedAt": datetime.now().isoformat(),
         "extractedAt": datetime.now().isoformat(),
@@ -1266,6 +1343,7 @@ async def process_orcamento_confirmed(
         "itemsFound": len(items),
         "status": "completed",
         "ia_metadata": ia_metadata,
+        "table_candidates": table_candidates,
     }
     _save_extracted_cache(upload_id, _OFFLINE_CACHE[upload_id])
 
@@ -1285,11 +1363,13 @@ async def process_orcamento_confirmed(
             "upload_id": upload_id,
             "table_id": payload.table_id,
             "resolved_table_id": resolved_table_id,
+            "page": page,
         },
         output_payload={
             "items_found": len(items),
             "engine_used": ia_metadata.get("engine_used"),
             "provider": provider_used,
+            "raw_structured_items": len(raw_structured_items) if isinstance(raw_structured_items, list) else 0,
         },
     )
 
@@ -1302,6 +1382,7 @@ async def process_orcamento_confirmed(
         "items_found": len(items),
         "tables": tables_out,
         "items": items,
+        "structured_items": raw_structured_items,
         "resumo": resumo,
         "ia_metadata": ia_metadata,
         "message": "Orçamento processado com a tabela selecionada",

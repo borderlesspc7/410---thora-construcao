@@ -141,7 +141,12 @@ export const detectOrcamentoTables = async (uploadId: string) => {
       status: string;
       upload_id: string;
       tables_found: number;
-      options: { id: string; preview_texto: string; num_pagina: number }[];
+      options: {
+        id: string;
+        nome_tabela: string;
+        preview_texto: string;
+        num_pagina: number;
+      }[];
       mock_fallback?: boolean;
     };
   } catch (error: any) {
@@ -164,7 +169,20 @@ export const processOrcamentoConfirmed = async (uploadId: string, tableId: strin
       { upload_id: uploadId, table_id: tableId },
       { timeout: 600000 },
     );
-    return response.data;
+    return response.data as {
+      status: string;
+      upload_id: string;
+      document_id: string | null;
+      filename: string;
+      tables_found: number;
+      items_found: number;
+      tables: any[];
+      items: any[];
+      structured_items?: any[];
+      resumo: Record<string, unknown>;
+      ia_metadata?: Record<string, unknown>;
+      message: string;
+    };
   } catch (error: any) {
     const detail = error.response?.data?.detail;
     const msg =

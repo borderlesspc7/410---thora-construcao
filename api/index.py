@@ -1,6 +1,13 @@
+"""
+Handler da Vercel: expõe o FastAPI definido em `backend.main`.
+
+O diretório `backend` é adicionado ao sys.path antes do import.
+"""
+
+from __future__ import annotations
+
 import sys
 from pathlib import Path
-
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 BACKEND_DIR = ROOT_DIR / "backend"
@@ -8,4 +15,6 @@ BACKEND_DIR = ROOT_DIR / "backend"
 if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
 
-from main import app  # noqa: E402,F401
+from main import app
+
+__all__ = ["app"]
