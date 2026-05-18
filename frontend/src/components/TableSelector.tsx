@@ -1,5 +1,5 @@
-import React from "react";
-import { Table2 } from "lucide-react";
+import React, { useState, useEffect } from "react";
+import { Table2, Eye, X } from "lucide-react";
 import { btnPrimary } from "./ui/buttonClasses";
 
 export interface MockTableOption {
@@ -50,6 +50,22 @@ export const TableSelector: React.FC<TableSelectorProps> = ({
   onSelect,
   onConfirm,
 }) => {
+  const [previewImage, setPreviewImage] = useState<string | null>(null);
+
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        setPreviewImage(null);
+      }
+    };
+    if (previewImage) {
+      document.addEventListener("keydown", handleKeyDown);
+    }
+    return () => {
+      document.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [previewImage]);
+
   if (loading) {
     return (
       <div
@@ -108,7 +124,20 @@ export const TableSelector: React.FC<TableSelectorProps> = ({
                     Página {table.page}
                   </p>
                 </div>
-                <div className="flex shrink-0">
+                <div className="flex shrink-0 items-center gap-2">
+                  {table.imagem_base64 && (
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setPreviewImage(table.imagem_base64!);
+                      }}
+                      className="rounded-full p-1.5 text-slate-400 hover:bg-slate-100 hover:text-slate-700 transition"
+                      aria-label="Visualizar tabela ampliada"
+                    >
+                      <Eye className="h-5 w-5" />
+                    </button>
+                  )}
                   <input
                     type="checkbox"
                     checked={isSelected}
@@ -149,6 +178,37 @@ export const TableSelector: React.FC<TableSelectorProps> = ({
           >
             Processar {selectedIds.length} tabela{selectedIds.length !== 1 ? 's' : ''} com IA
           </button>
+        </div>
+      )}
+
+      {/* Modal de Preview */}
+      {previewImage && (
+        <div 
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4"
+          onClick={() => setPreviewImage(null)}
+          aria-modal="true"
+          role="dialog"
+        >
+          <div 
+            className="relative flex max-h-[90vh] max-w-[90vw] flex-col rounded-lg bg-white p-2 shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <button
+              type="button"
+              onClick={() => setPreviewImage(null)}
+              className="absolute -top-4 -right-4 flex h-8 w-8 items-center justify-center rounded-full bg-white text-slate-700 shadow hover:bg-slate-100 focus:outline-none"
+              aria-label="Fechar visualização"
+            >
+              <X className="h-5 w-5" />
+            </button>
+            <div className="overflow-auto rounded bg-slate-50 p-2">
+              <img
+                src={`data:image/png;base64,${previewImage}`}
+                alt="Visualização ampliada da tabela"
+                className="max-h-[85vh] max-w-full object-contain"
+              />
+            </div>
+          </div>
         </div>
       )}
     </div>

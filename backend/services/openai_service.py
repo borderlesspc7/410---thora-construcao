@@ -480,15 +480,25 @@ async def process_selected_table(
             })
 
         response = await client.chat.completions.create(
-            model=OPENAI_ORCAMENTO_MODEL,
-            temperature=0,
-            max_tokens=3000,
+            model="gpt-4o-2024-08-06",
+            temperature=0.0,
+            max_tokens=8192,
             response_format={"type": "json_schema", "json_schema": EXTRACTION_JSON_SCHEMA},
             messages=messages,
         )
         duration_ms = (time.perf_counter() - t0) * 1000
         raw_content = response.choices[0].message.content or "{}"
-        parsed = _parse_json_content(raw_content)
+        
+        # Limpa formatação markdown se houver
+        if raw_content.startswith("```"):
+            raw_content = raw_content.strip("`").removeprefix("json").strip()
+            
+        try:
+            parsed = json.loads(raw_content)
+        except json.JSONDecodeError as e:
+            print("CONTEÚDO QUE FALHOU NO PARSE:", raw_content)
+            import traceback; traceback.print_exc()
+            raise ValueError(f"Falha ao decodificar o JSON retornado pela OpenAI: {e}")
         raw_items = parsed.get("orcamento_itens") if isinstance(parsed, dict) else []
         normalized_items = _normalize_structured_items(raw_items)
         summary = parsed.get("resumo") if isinstance(parsed, dict) else {}
@@ -554,7 +564,9 @@ async def process_selected_table(
             error=f"bad_request: {exc}",
             duration_ms=duration_ms,
         )
-        raise OpenAIServiceError("A requisição para a OpenAI foi rejeitada. Verifique o prompt ou a chave.", status_code=400, code="bad_request") from exc
+        print("OPENAI BAD REQUEST ERROR:", exc)
+        import traceback; traceback.print_exc()
+        raise OpenAIServiceError(f"A requisição para a OpenAI foi rejeitada: {exc}", status_code=400, code="bad_request") from exc
     except (json.JSONDecodeError, OpenAIError, ValueError) as exc:
         duration_ms = (time.perf_counter() - t0) * 1000
         log_ai_exchange(
@@ -565,4 +577,6 @@ async def process_selected_table(
             error=f"parse_or_openai: {exc}",
             duration_ms=duration_ms,
         )
-        raise OpenAIServiceError("A OpenAI retornou uma resposta inválida ao processar a tabela selecionada.", status_code=502, code="invalid_response") from exc
+        print("OPENAI PARSE/RESPONSE ERROR:", exc)
+        import traceback; traceback.print_exc()
+        raise OpenAIServiceError(f"A OpenAI retornou uma resposta inválida: {exc}", status_code=502, code="invalid_response") from exc
