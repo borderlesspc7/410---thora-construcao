@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useMemo } from "react";
 import { useNavigate, useLocation, useParams } from "react-router-dom";
 import { Document, Page, pdfjs } from "react-pdf"; // <--- Imports do PDF
 import pdfWorkerSrc from "pdfjs-dist/build/pdf.worker.min.mjs?url";
@@ -38,6 +38,8 @@ interface ItemOrcamento {
   qty: number;
   unitPrice: number;
   selected?: boolean;
+  classification?: "A" | "B" | "C";
+  accumulated_percentage?: number;
 }
 
 interface TableRow {
@@ -122,6 +124,63 @@ export default function ValidacaoOrcamento() {
   const [isSaving, setIsSaving] = useState(false);
   const [deleteItemId, setDeleteItemId] = useState<number | null>(null);
   const [selectAll, setSelectAll] = useState(false);
+
+  // --- LÓGICA DA CURVA ABC ---
+  const classifiedItems = useMemo(() => {
+    // Filtramos apenas os itens (ignorando grupos) para o cálculo da Curva ABC
+    const itemsToClassify = items.filter(item => item.tipo !== "grupo");
+    
+    // Ordenamos por valor total decrescente
+    const sortedItems = [...itemsToClassify].sort((a, b) => {
+      const totalA = a.qty * a.unitPrice;
+      const totalB = b.qty * b.unitPrice;
+      const diff = totalB - totalA;
+      if (diff !== 0) return diff;
+      return String(a.id).localeCompare(String(b.id), "pt-BR");
+    });
+
+    const totalValue = sortedItems.reduce((acc, item) => acc + (item.qty * item.unitPrice), 0);
+
+    let accumulatedValue = 0;
+    const classifiedMap = new Map<number, { classification: "A" | "B" | "C", accumulated_percentage: number }>();
+
+    sortedItems.forEach((item) => {
+      const itemTotal = item.qty * item.unitPrice;
+      const prevPercentage = totalValue > 0 ? (accumulatedValue / totalValue) * 100 : 0;
+      accumulatedValue += itemTotal;
+      const currentPercentage = totalValue > 0 ? (accumulatedValue / totalValue) * 100 : 0;
+
+      let classification: "A" | "B" | "C" = "C";
+      if (prevPercentage < 80) {
+        classification = "A";
+      } else if (prevPercentage < 95) {
+        classification = "B";
+      }
+
+      classifiedMap.set(item.id, {
+        classification,
+        accumulated_percentage: currentPercentage,
+      });
+    });
+
+    // Construir a lista final ordenada: grupos primeiro (opcional, mas comum) ou apenas itens ordenados
+    // Como a instrução foi "deve ficar em ordem do mais caro ao mais barato", vamos retornar os itens ordenados
+    // e adicionar os grupos no final (ou ignorá-los na ordenação principal).
+    // Vamos separar grupos e itens classificados.
+    const finalItems: ItemOrcamento[] = [];
+
+    // Adiciona os itens ordenados e classificados
+    sortedItems.forEach(item => {
+      const abcData = classifiedMap.get(item.id);
+      finalItems.push({ ...item, ...abcData });
+    });
+
+    // Adiciona os grupos no final
+    const groups = items.filter(item => item.tipo === "grupo");
+    finalItems.push(...groups);
+
+    return finalItems;
+  }, [items]);
 
   // States do PDF Viewer
   const [pdfFile, setPdfFile] = useState<File | null>(null);
@@ -395,7 +454,7 @@ export default function ValidacaoOrcamento() {
 
   // Handler de Exportação XLSX
   const handleExport = async () => {
-    if (items.length === 0) {
+    if (classifiedItems.length === 0) {
       toast.warning("Nada para exportar", {
         description: "Adicione pelo menos um item à planilha.",
       });
@@ -404,7 +463,7 @@ export default function ValidacaoOrcamento() {
 
     setIsExporting(true);
     try {
-      await exportToXLSX(items);
+      await exportToXLSX(classifiedItems);
       toast.success("Planilha exportada", {
         description: "O download do XLSX deve iniciar em instantes.",
       });
@@ -444,14 +503,20 @@ export default function ValidacaoOrcamento() {
 
       const extractedData = (location.state?.extractedData as ExtractedTable[] | undefined) || [];
 
-      const normalizedItems = items.map((item) => ({
+      const normalizedItems = classifiedItems.map((item) => ({
         id: String(item.id),
+        item: item.item,
+        tipo: item.tipo,
+        banco: item.banco,
+        code: item.code,
         description: item.description,
         unit: item.unit,
         quantity: item.qty,
         unitValue: item.unitPrice,
         totalValue: Number(item.qty || 0) * Number(item.unitPrice || 0),
         selected: Boolean(item.selected),
+        classification: item.classification,
+        accumulated_percentage: item.accumulated_percentage,
       }));
 
       await upsertOrcamento(uploadId, {
@@ -756,6 +821,9 @@ export default function ValidacaoOrcamento() {
                       <th className="px-4 py-3 text-xs font-semibold text-slate-500 uppercase tracking-wider w-20">
                         Tipo
                       </th>
+                      <th className="px-2 py-3 text-xs font-semibold text-slate-500 uppercase tracking-wider w-12 text-center">
+                        ABC
+                      </th>
                       <th className="px-4 py-3 text-xs font-semibold text-slate-500 uppercase tracking-wider">
                         Descrição
                       </th>
@@ -775,11 +843,22 @@ export default function ValidacaoOrcamento() {
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100">
-                    {items.map((item) => (
+                    {classifiedItems.map((item) => {
+                      // Determinar a cor de fundo com base na classificação ABC
+                      let rowBgClass = "hover:bg-blue-50/30";
+                      if (item.classification === "A") {
+                        rowBgClass = "bg-red-50/30 hover:bg-red-50/50";
+                      } else if (item.classification === "B") {
+                        rowBgClass = "bg-yellow-50/30 hover:bg-yellow-50/50";
+                      } else if (item.classification === "C") {
+                        rowBgClass = "bg-emerald-50/30 hover:bg-emerald-50/50";
+                      }
+
+                      return (
                       <tr
                         key={item.id}
-                        className={`hover:bg-blue-50/30 transition group ${
-                          item.selected ? 'bg-blue-50/40' : ''
+                        className={`transition group ${
+                          item.selected ? 'bg-blue-50/40' : rowBgClass
                         }`}
                       >
                         <td className="px-3 py-3">
@@ -797,7 +876,15 @@ export default function ValidacaoOrcamento() {
                             onChange={(e) =>
                               handleChange(item.id, "item", e.target.value)
                             }
-                            className="w-full bg-transparent font-mono text-xs text-slate-600 focus:outline-none focus:text-blue-600 border-b border-transparent focus:border-blue-500"
+                            className={`w-full bg-transparent font-mono text-xs focus:outline-none border-b border-transparent focus:border-blue-500 ${
+                              item.classification === "A"
+                                ? "text-red-700"
+                                : item.classification === "B"
+                                  ? "text-yellow-700"
+                                  : item.classification === "C"
+                                    ? "text-emerald-700"
+                                    : "text-slate-600"
+                            }`}
                             placeholder="1.1"
                           />
                         </td>
@@ -808,7 +895,15 @@ export default function ValidacaoOrcamento() {
                             onChange={(e) =>
                               handleChange(item.id, "code", e.target.value)
                             }
-                            className="w-full bg-transparent font-mono text-xs text-slate-600 focus:outline-none focus:text-blue-600 border-b border-transparent focus:border-blue-500"
+                            className={`w-full bg-transparent font-mono text-xs focus:outline-none border-b border-transparent focus:border-blue-500 ${
+                              item.classification === "A"
+                                ? "text-red-700"
+                                : item.classification === "B"
+                                  ? "text-yellow-700"
+                                  : item.classification === "C"
+                                    ? "text-emerald-700"
+                                    : "text-slate-600"
+                            }`}
                             placeholder="Código"
                           />
                         </td>
@@ -819,7 +914,15 @@ export default function ValidacaoOrcamento() {
                             onChange={(e) =>
                               handleChange(item.id, "banco", e.target.value)
                             }
-                            className="w-full bg-transparent font-mono text-xs text-slate-600 focus:outline-none focus:text-blue-600 border-b border-transparent focus:border-blue-500"
+                            className={`w-full bg-transparent font-mono text-xs focus:outline-none border-b border-transparent focus:border-blue-500 ${
+                              item.classification === "A"
+                                ? "text-red-700"
+                                : item.classification === "B"
+                                  ? "text-yellow-700"
+                                  : item.classification === "C"
+                                    ? "text-emerald-700"
+                                    : "text-slate-600"
+                            }`}
                             placeholder="SINAPI"
                           />
                         </td>
@@ -829,11 +932,37 @@ export default function ValidacaoOrcamento() {
                             onChange={(e) =>
                               handleChange(item.id, "tipo", e.target.value)
                             }
-                            className="w-full bg-transparent text-xs text-slate-600 focus:outline-none focus:text-blue-600 border-b border-transparent focus:border-blue-500"
+                            className={`w-full bg-transparent text-xs focus:outline-none border-b border-transparent focus:border-blue-500 ${
+                              item.classification === "A"
+                                ? "text-red-700"
+                                : item.classification === "B"
+                                  ? "text-yellow-700"
+                                  : item.classification === "C"
+                                    ? "text-emerald-700"
+                                    : "text-slate-600"
+                            }`}
                           >
                             <option value="item">Item</option>
                             <option value="grupo">Grupo</option>
                           </select>
+                        </td>
+                        <td className="px-2 py-3 text-center">
+                          {item.classification ? (
+                            <span
+                              className={`inline-flex items-center justify-center rounded-full px-2 py-0.5 text-xs font-bold ${
+                                item.classification === "A"
+                                  ? "bg-red-100 text-red-700"
+                                  : item.classification === "B"
+                                    ? "bg-yellow-100 text-yellow-700"
+                                    : "bg-emerald-100 text-emerald-700"
+                              }`}
+                              title={`Acumulado: ${item.accumulated_percentage?.toFixed(2)}%`}
+                            >
+                              {item.classification}
+                            </span>
+                          ) : (
+                            <span className="text-slate-300">-</span>
+                          )}
                         </td>
                         <td className="px-4 py-3">
                           <input
@@ -846,7 +975,15 @@ export default function ValidacaoOrcamento() {
                                 e.target.value,
                               )
                             }
-                            className="w-full bg-transparent text-sm text-slate-800 focus:outline-none border-b border-transparent focus:border-blue-500"
+                            className={`w-full bg-transparent text-sm focus:outline-none border-b border-transparent focus:border-blue-500 ${
+                              item.classification === "A"
+                                ? "text-red-900"
+                                : item.classification === "B"
+                                  ? "text-yellow-900"
+                                  : item.classification === "C"
+                                    ? "text-emerald-900"
+                                    : "text-slate-800"
+                            }`}
                           />
                         </td>
                         <td className="px-2 py-3 text-center">
@@ -856,7 +993,15 @@ export default function ValidacaoOrcamento() {
                             onChange={(e) =>
                               handleChange(item.id, "unit", e.target.value)
                             }
-                            className="w-full text-center bg-slate-50 rounded text-xs font-medium text-slate-600 focus:outline-none focus:ring-1 focus:ring-blue-500 py-1"
+                            className={`w-full text-center rounded text-xs font-medium focus:outline-none focus:ring-1 focus:ring-blue-500 py-1 ${
+                              item.classification === "A"
+                                ? "bg-red-100 text-red-800"
+                                : item.classification === "B"
+                                  ? "bg-yellow-100 text-yellow-800"
+                                  : item.classification === "C"
+                                    ? "bg-emerald-100 text-emerald-800"
+                                    : "bg-slate-50 text-slate-600"
+                            }`}
                           />
                         </td>
                         <td className="px-4 py-3">
@@ -873,12 +1018,28 @@ export default function ValidacaoOrcamento() {
                               )
                             }
                             placeholder="0,00"
-                            className="w-full text-right bg-transparent text-sm font-medium text-slate-700 focus:outline-none border-b border-transparent focus:border-blue-500 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none"
+                            className={`w-full text-right bg-transparent text-sm font-medium focus:outline-none border-b border-transparent focus:border-blue-500 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none ${
+                              item.classification === "A"
+                                ? "text-red-900"
+                                : item.classification === "B"
+                                  ? "text-yellow-900"
+                                  : item.classification === "C"
+                                    ? "text-emerald-900"
+                                    : "text-slate-700"
+                            }`}
                           />
                         </td>
                         <td className="px-4 py-3">
                           <div className="flex items-center justify-end gap-1 border-b border-transparent focus-within:border-blue-500 transition-colors">
-                            <span className="text-xs text-slate-400">R$</span>
+                            <span className={`text-xs ${
+                              item.classification === "A"
+                                ? "text-red-400"
+                                : item.classification === "B"
+                                  ? "text-yellow-500"
+                                  : item.classification === "C"
+                                    ? "text-emerald-500"
+                                    : "text-slate-400"
+                            }`}>R$</span>
                             <input
                               type="number"
                               step="0.01"
@@ -890,12 +1051,36 @@ export default function ValidacaoOrcamento() {
                                   parseFloat(e.target.value) || 0,
                                 )
                               }
-                              className="w-20 text-right bg-transparent text-sm font-medium text-slate-700 focus:outline-none [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none"
+                              className={`w-20 text-right bg-transparent text-sm font-medium focus:outline-none [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none ${
+                                item.classification === "A"
+                                  ? "text-red-900"
+                                  : item.classification === "B"
+                                    ? "text-yellow-900"
+                                    : item.classification === "C"
+                                      ? "text-emerald-900"
+                                      : "text-slate-700"
+                              }`}
                             />
                           </div>
                         </td>
-                        <td className="px-4 py-3 text-right bg-slate-50/50">
-                          <span className="text-sm font-bold text-slate-800">
+                        <td className={`px-4 py-3 text-right ${
+                          item.classification === "A"
+                            ? "bg-red-100/50"
+                            : item.classification === "B"
+                              ? "bg-yellow-100/50"
+                              : item.classification === "C"
+                                ? "bg-emerald-100/50"
+                                : "bg-slate-50/50"
+                        }`}>
+                          <span className={`text-sm font-bold ${
+                            item.classification === "A"
+                              ? "text-red-900"
+                              : item.classification === "B"
+                                ? "text-yellow-900"
+                                : item.classification === "C"
+                                  ? "text-emerald-900"
+                                  : "text-slate-800"
+                          }`}>
                             {formatMoney(item.qty * item.unitPrice)}
                           </span>
                         </td>
@@ -910,7 +1095,8 @@ export default function ValidacaoOrcamento() {
                           </button>
                         </td>
                       </tr>
-                    ))}
+                    );
+                    })}
                   </tbody>
                 </table>
               )}

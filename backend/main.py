@@ -1257,12 +1257,16 @@ async def process_orcamento_confirmed(
         if not selected:
             selected = _find_table_candidate(all_tables, t_id)
         if not selected:
-            continue # Pula se não achar a tabela
+            logger.warning(f"Tabela não encontrada para o ID: {t_id}")
+            raise HTTPException(status_code=400, detail=f"Tabela não encontrada para o ID: {t_id}")
 
         rows = selected.get("rows") or []
         page = int(selected.get("page") or 1)
         resolved_table_id = str(selected.get("table_id") or t_id)
         candidate_name = str((selected_candidate or {}).get("nome_tabela") or "")
+
+        # Log para debug do bbox
+        logger.info(f"Processando tabela {resolved_table_id} na página {page}. Bbox: {selected.get('bbox')}")
 
         tables_out.append({
             "page": page,
@@ -1298,13 +1302,15 @@ async def process_orcamento_confirmed(
             
         except OpenAIServiceError as exc:
             logger.warning(f"Erro ao processar tabela {t_id}: {exc}")
-            continue
+            import traceback; traceback.print_exc()
+            raise HTTPException(status_code=500, detail=f"Erro OpenAI na tabela {t_id}: {str(exc)}")
         except Exception as exc:
             logger.warning(f"Erro inesperado ao processar tabela {t_id}: {exc}")
-            continue
+            import traceback; traceback.print_exc()
+            raise HTTPException(status_code=500, detail=f"Erro inesperado na tabela {t_id}: {str(exc)}")
 
     if not combined_items:
-        raise HTTPException(status_code=500, detail="Falha ao extrair dados de todas as tabelas selecionadas.")
+        raise HTTPException(status_code=500, detail="Falha ao extrair dados de todas as tabelas selecionadas. Verifique os logs do servidor.")
 
     # Normalizar os itens combinados
     normalized_items = _normalize_analytic_items(combined_items)
@@ -1373,16 +1379,6 @@ async def process_orcamento_confirmed(
         "resumo": combined_resumo,
         "ia_metadata": ia_metadata_final,
         "message": f"✅ Dados extraídos de {len(ia_metadata_list)} tabela(s) com sucesso",
-    }
-        "filename": filename,
-        "tables_found": len(tables_out),
-        "items_found": len(items),
-        "tables": tables_out,
-        "items": items,
-        "structured_items": raw_structured_items,
-        "resumo": resumo,
-        "ia_metadata": ia_metadata,
-        "message": "Orçamento processado com a tabela selecionada",
     }
 
 
@@ -2077,7 +2073,7 @@ async def export_xlsx(
         )
         
         # Cabeçalho
-        headers = ["Código", "Descrição", "Unidade", "Quantidade", "Valor Unitário", "Total"]
+        headers = ["Item", "Tipo", "Curva ABC", "Banco", "Código", "Descrição", "Unidade", "Quantidade", "Valor Unitário", "Total"]
         for col_num, header in enumerate(headers, 1):
             cell = ws.cell(row=1, column=col_num)
             cell.value = header
@@ -2086,51 +2082,79 @@ async def export_xlsx(
             cell.alignment = Alignment(horizontal="center", vertical="center")
             cell.border = border
         
+        # Cores Curva ABC
+        fill_A = PatternFill(start_color="FFD6D6", end_color="FFD6D6", fill_type="solid") # red-100
+        fill_B = PatternFill(start_color="FEF08A", end_color="FEF08A", fill_type="solid") # yellow-100
+        fill_C = PatternFill(start_color="D1FAE5", end_color="D1FAE5", fill_type="solid") # emerald-100
+
         # Dados
         total_geral = 0
         for row_num, item in enumerate(items, 2):
-            ws.cell(row=row_num, column=1).value = item.get("code", "")
-            ws.cell(row=row_num, column=2).value = item.get("description", "")
-            ws.cell(row=row_num, column=3).value = item.get("unit", "")
+            abc_class = item.get("classification", "")
+            
+            # Determinar o fill da linha baseado na classificação
+            row_fill = None
+            if abc_class == "A":
+                row_fill = fill_A
+            elif abc_class == "B":
+                row_fill = fill_B
+            elif abc_class == "C":
+                row_fill = fill_C
+
+            ws.cell(row=row_num, column=1).value = item.get("item", "")
+            ws.cell(row=row_num, column=2).value = item.get("tipo", "")
+            ws.cell(row=row_num, column=3).value = abc_class
+            ws.cell(row=row_num, column=4).value = item.get("banco", "")
+            ws.cell(row=row_num, column=5).value = item.get("code", "")
+            ws.cell(row=row_num, column=6).value = item.get("description", "")
+            ws.cell(row=row_num, column=7).value = item.get("unit", "")
             
             qty = float(item.get("qty", 0))
             unit_price = float(item.get("unitPrice", 0))
             total = qty * unit_price
             total_geral += total
             
-            ws.cell(row=row_num, column=4).value = qty
-            ws.cell(row=row_num, column=5).value = unit_price
-            ws.cell(row=row_num, column=6).value = total
+            ws.cell(row=row_num, column=8).value = qty
+            ws.cell(row=row_num, column=9).value = unit_price
+            ws.cell(row=row_num, column=10).value = total
             
             # Formato moeda para R$
-            ws.cell(row=row_num, column=5).number_format = 'R$ #,##0.00'
-            ws.cell(row=row_num, column=6).number_format = 'R$ #,##0.00'
-            ws.cell(row=row_num, column=6).fill = currency_fill
+            ws.cell(row=row_num, column=9).number_format = 'R$ #,##0.00'
+            ws.cell(row=row_num, column=10).number_format = 'R$ #,##0.00'
             
-            # Bordas
-            for col in range(1, 7):
-                ws.cell(row=row_num, column=col).border = border
-                ws.cell(row=row_num, column=col).alignment = Alignment(horizontal="right" if col >= 4 else "left")
+            # Aplicar estilos para todas as células da linha
+            for col in range(1, 11):
+                cell = ws.cell(row=row_num, column=col)
+                cell.border = border
+                if row_fill:
+                    cell.fill = row_fill
+                elif col == 10 and not row_fill:
+                    cell.fill = currency_fill
+                ws.cell(row=row_num, column=col).alignment = Alignment(horizontal="right" if col >= 8 else "left")
         
         # Linha de Total
         total_row = len(items) + 3
-        ws.cell(row=total_row, column=5).value = "TOTAL GERAL:"
-        ws.cell(row=total_row, column=5).font = total_font
-        ws.cell(row=total_row, column=5).alignment = Alignment(horizontal="right")
+        ws.cell(row=total_row, column=9).value = "TOTAL GERAL:"
+        ws.cell(row=total_row, column=9).font = total_font
+        ws.cell(row=total_row, column=9).alignment = Alignment(horizontal="right")
         
-        ws.cell(row=total_row, column=6).value = total_geral
-        ws.cell(row=total_row, column=6).number_format = 'R$ #,##0.00'
-        ws.cell(row=total_row, column=6).fill = total_fill
-        ws.cell(row=total_row, column=6).font = total_font
-        ws.cell(row=total_row, column=6).border = border
+        ws.cell(row=total_row, column=10).value = total_geral
+        ws.cell(row=total_row, column=10).number_format = 'R$ #,##0.00'
+        ws.cell(row=total_row, column=10).fill = total_fill
+        ws.cell(row=total_row, column=10).font = total_font
+        ws.cell(row=total_row, column=10).border = border
         
         # Ajustar largura das colunas
-        ws.column_dimensions['A'].width = 12
-        ws.column_dimensions['B'].width = 40
-        ws.column_dimensions['C'].width = 12
-        ws.column_dimensions['D'].width = 15
-        ws.column_dimensions['E'].width = 15
-        ws.column_dimensions['F'].width = 15
+        ws.column_dimensions['A'].width = 10
+        ws.column_dimensions['B'].width = 10
+        ws.column_dimensions['C'].width = 10
+        ws.column_dimensions['D'].width = 10
+        ws.column_dimensions['E'].width = 12
+        ws.column_dimensions['F'].width = 40
+        ws.column_dimensions['G'].width = 12
+        ws.column_dimensions['H'].width = 15
+        ws.column_dimensions['I'].width = 15
+        ws.column_dimensions['J'].width = 15
         
         # Altura do cabeçalho
         ws.row_dimensions[1].height = 25
