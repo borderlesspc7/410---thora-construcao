@@ -65,7 +65,9 @@ EXTRACTION_SYSTEM_PROMPT = (
     "Você é um Engenheiro de Custos especialista em análise de dados. Sua única missão é extrair os itens da planilha de ORÇAMENTO DETALHADO de arquivos PDF de licitações e estruturá-los em um JSON estrito.\n\n"
     "REGRAS DE EXTRAÇÃO E MAPEAMENTO ESPACIAL (MUITO IMPORTANTE):\n\n"
     "0. ORDEM DAS COLUNAS NO PDF (da esquerda para a direita): Código | Descrição do Serviço | BDI | Unid. | Qtde | Preço Unit. | Preço total. "
+    "Variante comum em licitações: Código | Descrição | BDI | Unid. | Qtde. Máxima | Qtde. Mínima | Preço Unit. | Preço total — use Qtde. Máxima como 'quantidade' quando existirem duas colunas de qtde. "
     "O campo JSON 'codigo' vem da coluna Código (ex: CPU6724, 5914351M). O campo 'item' é a numeração hierárquica (ex: 1.1, 2.3) se existir em coluna separada; não repita o código no campo item.\n"
+    "0b. PREÇOS NA IMAGEM: Leia Preço Unit. e Preço total diretamente da imagem quando o texto extraído vier vazio ou zerado. Nunca deixe valor_unitario e valor_total zerados se a imagem mostrar valores.\n"
     "1. IDENTIFICAÇÃO DE COLUNAS POR CABEÇALHO: Localize cada coluna pelo cabeçalho exato antes de extrair valores.\n"
     "2. EXTRAÇÃO BASEADA EM LINHA: Cada valor deve pertencer à coluna vertical correta. Célula vazia → 0.0. NUNCA desloque Qtde para Preço Unit. ou Preço total.\n"
     "3. RIGOR COM NÚMEROS E UNIDADES: 'unidade' só com siglas (M2, M3, UN, m, T, TKm). Separe número e unidade se vierem juntos.\n"
@@ -314,6 +316,72 @@ def _apply_line_sanity_check(
             return quantidade, vu_corrigido, valor_total
 
     return quantidade, valor_unitario, valor_total
+
+
+def _items_missing_prices(items: List[Dict[str, Any]]) -> bool:
+    """True quando a maioria dos itens executivos não tem preço unitário nem total."""
+    executive = [
+        it
+        for it in items
+        if str(it.get("tipo") or "item").lower() != "grupo"
+        and "total do grupo" not in str(it.get("descricao") or "").lower()
+    ]
+    if not executive:
+        return False
+    missing = 0
+    for it in executive:
+        vu = _coerce_number(it.get("valor_unitario"))
+        vt = _coerce_number(it.get("valor_total"))
+        if vu <= 0 and vt <= 0:
+            missing += 1
+    return missing >= max(1, len(executive) // 2)
+
+
+async def _extract_with_openai_vision(
+    client: AsyncOpenAI,
+    *,
+    system_msg: str,
+    user_msg: str,
+    base64_image: str,
+    image_mime: str = "image/jpeg",
+) -> Tuple[List[Dict[str, Any]], Dict[str, Any], str]:
+    """Executa extração estruturada com imagem + texto de apoio."""
+    response = await client.chat.completions.create(
+        model="gpt-4o-2024-08-06",
+        temperature=0.0,
+        max_tokens=8192,
+        response_format={"type": "json_schema", "json_schema": EXTRACTION_JSON_SCHEMA},
+        messages=[
+            {"role": "system", "content": system_msg},
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": (
+                            f"{EXTRACTION_USER_PROMPT_HEADER}\n\n"
+                            f"CONTEXTO DE TEXTO EXTRAÍDO (pode estar incompleto — a imagem é a fonte da verdade para preços):\n"
+                            f"{user_msg}"
+                        ),
+                    },
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": f"data:{image_mime};base64,{base64_image}",
+                            "detail": "high",
+                        },
+                    },
+                ],
+            },
+        ],
+    )
+    raw_content = response.choices[0].message.content or "{}"
+    if raw_content.startswith("```"):
+        raw_content = raw_content.strip("`").removeprefix("json").strip()
+    parsed = json.loads(raw_content)
+    raw_items = parsed.get("orcamento_itens") if isinstance(parsed, dict) else []
+    normalized_items = _normalize_structured_items(raw_items)
+    return normalized_items, parsed if isinstance(parsed, dict) else {}, raw_content
 
 
 def _should_skip_extracted_row(tipo: str, descricao: str, codigo: str) -> bool:
@@ -587,51 +655,39 @@ async def process_selected_table(
                 raw_content[:200],
             )
 
-        if not normalized_items and table_image_base64:
+        needs_full_page_retry = (
+            table_image_base64
+            and (
+                not normalized_items
+                or _items_missing_prices(normalized_items)
+            )
+        )
+        if needs_full_page_retry:
             try:
                 full_page_b64 = _pdf_page_to_base64_image(pdf_content, table_page)
                 logger.info(
-                    "Retentando %s (pág %s) com imagem da página inteira após crop vazio",
+                    "Retentando %s (pág %s) com imagem da página inteira (itens=%s, sem_preço=%s)",
                     table_id,
                     table_page,
+                    len(normalized_items),
+                    _items_missing_prices(normalized_items),
                 )
-                retry_response = await client.chat.completions.create(
-                    model="gpt-4o-2024-08-06",
-                    temperature=0.0,
-                    max_tokens=8192,
-                    response_format={"type": "json_schema", "json_schema": EXTRACTION_JSON_SCHEMA},
-                    messages=[
-                        {"role": "system", "content": system_msg},
-                        {
-                            "role": "user",
-                            "content": [
-                                {
-                                    "type": "text",
-                                    "text": (
-                                        f"{EXTRACTION_USER_PROMPT_HEADER}\n\n"
-                                        f"CONTEXTO DE TEXTO EXTRAÍDO:\n{user_msg}"
-                                    ),
-                                },
-                                {
-                                    "type": "image_url",
-                                    "image_url": {
-                                        "url": f"data:image/jpeg;base64,{full_page_b64}",
-                                        "detail": "high",
-                                    },
-                                },
-                            ],
-                        },
-                    ],
+                retry_items, retry_parsed, retry_raw = await _extract_with_openai_vision(
+                    client,
+                    system_msg=system_msg,
+                    user_msg=user_msg,
+                    base64_image=full_page_b64,
+                    image_mime="image/jpeg",
                 )
-                retry_raw = retry_response.choices[0].message.content or "{}"
-                if retry_raw.startswith("```"):
-                    retry_raw = retry_raw.strip("`").removeprefix("json").strip()
-                retry_parsed = json.loads(retry_raw)
-                retry_items = retry_parsed.get("orcamento_itens") if isinstance(retry_parsed, dict) else []
-                normalized_items = _normalize_structured_items(retry_items)
-                if normalized_items:
+                if retry_items and (
+                    not normalized_items
+                    or not _items_missing_prices(retry_items)
+                    or len(retry_items) > len(normalized_items)
+                ):
+                    normalized_items = retry_items
                     parsed = retry_parsed
                     raw_content = retry_raw
+                    input_audit["image_source"] = "full_page_retry"
                     duration_ms = (time.perf_counter() - t0) * 1000
             except Exception as retry_exc:
                 logger.warning("Retry página inteira falhou para %s: %s", table_id, retry_exc)

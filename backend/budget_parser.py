@@ -18,7 +18,10 @@ class BudgetParser:
         'descrição', 'descricao', 'description', 'descr', 'serviço', 'servico',
         'do serviço', 'do servico', 'material', 'especificação', 'especificacao',
     ]
-    QUANTIDADE_KEYWORDS = ['qtd', 'quant', 'quantidade', 'quantity', 'qty', 'qtde']
+    QUANTIDADE_KEYWORDS = [
+        'qtd', 'quant', 'quantidade', 'quantity', 'qty', 'qtde',
+        'qtde. máxima', 'qtde máxima', 'qtde maxima', 'qtde. maxima',
+    ]
     UNIDADE_KEYWORDS = ['un', 'und', 'unid', 'unidade', 'unit', 'u.', 'unid.']
     VALOR_KEYWORDS = [
         'valor', 'price', 'preço', 'preco', 'unitário', 'unitario', 'unit', 'v.unit',
@@ -158,6 +161,8 @@ class BudgetParser:
                     if keyword in cell_lower:
                         structure['quantidade'] = idx
                         break
+                if structure['quantidade'] == -1 and 'qtde' in cell_lower and 'mín' not in cell_lower and 'min' not in cell_lower:
+                    structure['quantidade'] = idx
             
             if structure['unidade'] == -1:
                 for keyword in self.UNIDADE_KEYWORDS:

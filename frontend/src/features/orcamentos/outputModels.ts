@@ -3,8 +3,15 @@ export type OutputModelId = "analitico" | "sintetico" | "curva_abc";
 export type OutputModelsSelection = Record<OutputModelId, boolean>;
 
 export const DEFAULT_OUTPUT_MODELS: OutputModelsSelection = {
-  analitico: true,
-  sintetico: true,
+  analitico: false,
+  sintetico: false,
+  curva_abc: true,
+};
+
+/** Único modelo ativo no fluxo atual (Curva ABC). */
+export const CURVA_ABC_ONLY: OutputModelsSelection = {
+  analitico: false,
+  sintetico: false,
   curva_abc: true,
 };
 

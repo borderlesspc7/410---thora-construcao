@@ -67,6 +67,37 @@ export function unitPriceSemBdiFromComBdi(
   return unitComBdi / factor;
 }
 
+/** Resolve qty, BDI e unitPrice (s/ BDI) a partir de item estruturado do backend. */
+export function resolveStructuredItemPricing(item: {
+  quantidade?: unknown;
+  Quantidade?: unknown;
+  qty?: unknown;
+  valor_unitario?: unknown;
+  "Valor Unitário"?: unknown;
+  unitPrice?: unknown;
+  unitValue?: unknown;
+  valor_total?: unknown;
+  Total?: unknown;
+  totalValue?: unknown;
+  bdi?: unknown;
+  BDI?: unknown;
+}): { qty: number; bdi: number; unitPrice: number } {
+  const qty = parseEditableNumber(item.quantidade ?? item.Quantidade ?? item.qty);
+  const bdi = parseEditableNumber(String(item.bdi ?? item.BDI ?? 0).replace("%", ""));
+
+  let unitComBdi = parseEditableNumber(
+    item.valor_unitario ?? item["Valor Unitário"] ?? item.unitValue ?? item.unitPrice,
+  );
+  const valorTotal = parseEditableNumber(item.valor_total ?? item.Total ?? item.totalValue);
+
+  if (unitComBdi <= 0 && valorTotal > 0 && qty > 0) {
+    unitComBdi = valorTotal / qty;
+  }
+
+  const unitPrice = unitPriceSemBdiFromComBdi(unitComBdi, bdi);
+  return { qty, bdi, unitPrice };
+}
+
 /**
  * Recalcula lineTotal, ordena por valor, percentuais e classificação A/B/C.
  * Itens "grupo" permanecem no final sem entrar na Curva ABC.

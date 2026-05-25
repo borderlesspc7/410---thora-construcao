@@ -41,6 +41,8 @@ type RawItem = Partial<Item> & {
   unit?: string;
   qty?: number;
   unitPrice?: number;
+  lineTotal?: number;
+  bdi?: number;
 };
 
 const CurvaABC: React.FC = () => {
@@ -71,7 +73,12 @@ const CurvaABC: React.FC = () => {
   const normalizeItem = (raw: RawItem, index: number): Item => {
     const quantidade = toNumber(raw.quantidade ?? raw.qty);
     const valorUnitario = toNumber(raw.valor_unitario ?? raw.unitPrice);
-    const valorTotal = toNumber(raw.valor_total ?? quantidade * valorUnitario);
+    const bdi = toNumber(raw.bdi);
+    const valorTotalExplicit = toNumber(raw.valor_total ?? raw.lineTotal);
+    const valorTotal =
+      valorTotalExplicit > 0
+        ? valorTotalExplicit
+        : quantidade * valorUnitario * (1 + bdi / 100);
 
     return {
       id: String(raw.id ?? index + 1),

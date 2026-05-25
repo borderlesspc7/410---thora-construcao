@@ -736,6 +736,81 @@ def _is_likely_budget_table(rows: List[List[Any]], min_score: int = 18) -> bool:
     return _score_budget_table_likelihood(rows) >= min_score
 
 
+def _items_all_missing_prices(items: List[Any]) -> bool:
+    executive: List[Dict[str, Any]] = []
+    for raw in items:
+        if not isinstance(raw, dict):
+            continue
+        tipo = str(raw.get("tipo") or "item").lower()
+        desc = str(raw.get("descricao") or raw.get("description") or "").lower()
+        if tipo == "grupo" or "total do grupo" in desc:
+            continue
+        executive.append(raw)
+    if not executive:
+        return False
+    missing = sum(
+        1
+        for it in executive
+        if _coerce_number(it.get("valor_unitario") or it.get("unitPrice")) <= 0
+        and _coerce_number(it.get("valor_total") or it.get("totalValue")) <= 0
+    )
+    return missing >= max(1, len(executive) // 2)
+
+
+def _rows_likely_missing_prices(rows: List[List[Any]]) -> bool:
+    """Detecta quando colunas de preço do PDF vieram vazias na extração tabular."""
+    if not rows or len(rows) < 2:
+        return False
+
+    header_idx = -1
+    unit_col = -1
+    total_col = -1
+    qty_col = -1
+
+    for idx, row in enumerate(rows[:25]):
+        row_text = " ".join(str(c).lower() for c in row if c)
+        if "preço unit" in row_text or "preco unit" in row_text:
+            header_idx = idx
+            for col_idx, cell in enumerate(row):
+                cell_lower = str(cell or "").lower().strip()
+                if unit_col < 0 and ("preço unit" in cell_lower or "preco unit" in cell_lower):
+                    unit_col = col_idx
+                if total_col < 0 and ("preço total" in cell_lower or "preco total" in cell_lower):
+                    total_col = col_idx
+                if qty_col < 0 and (
+                    "qtde" in cell_lower
+                    or "quant" in cell_lower
+                    or "qtd" in cell_lower
+                ):
+                    qty_col = col_idx
+            break
+
+    if header_idx < 0:
+        return False
+
+    data_rows = rows[header_idx + 1 : header_idx + 21]
+    priced_rows = 0
+    empty_price_rows = 0
+
+    for row in data_rows:
+        if _count_nonempty_table_rows([row]) == 0:
+            continue
+        desc = ""
+        if qty_col >= 0 and qty_col < len(row):
+            desc = str(row[qty_col] or "")
+        if not _coerce_number(desc) and len(str(row[0] if row else "")) < 2:
+            continue
+
+        unit_val = _coerce_number(row[unit_col]) if unit_col >= 0 and unit_col < len(row) else 0
+        total_val = _coerce_number(row[total_col]) if total_col >= 0 and total_col < len(row) else 0
+        if unit_val > 0 or total_val > 0:
+            priced_rows += 1
+        else:
+            empty_price_rows += 1
+
+    return empty_price_rows >= 2 and priced_rows == 0
+
+
 def _items_from_rows_fallback(rows: List[List[Any]], page: int) -> List[Dict[str, Any]]:
     """Extrai itens localmente quando a IA não retorna linhas válidas."""
     parser = BudgetParser()
@@ -1492,22 +1567,15 @@ async def detect_orcamento_tables(
                 b64 = base64.b64encode(img_bytes).decode("utf-8")
                 
                 camelot_rows = _camelot_table_to_rows(table)
-                nonempty = _count_nonempty_table_rows(camelot_rows)
-                budget_score = _score_budget_table_likelihood(camelot_rows)
-                if budget_score < 12 and nonempty < 15:
-                    continue
                 options.append({
                     "id": f"table-{idx}",
                     "pagina": page_num,
                     "coordenadas": [x0, y0, x1, y1],
                     "imagem_base64": b64,
-                    "nome_tabela": f"Tabela {idx + 1} (Pág {page_num}, {nonempty} linhas)",
+                    "nome_tabela": f"Tabela {idx + 1} (Pág {page_num})",
                     "num_pagina": page_num,
-                    "preview_texto": _preview_text_for_table_rows(camelot_rows) or "Visualização disponível via imagem.",
-                    "source": "camelot",
-                    "row_count": nonempty,
-                    "budget_score": budget_score,
-                    "is_budget_likely": budget_score >= 18,
+                    "preview_texto": _preview_text_for_table_rows(camelot_rows)
+                    or "Visualização disponível via imagem.",
                 })
             
             doc.close()
@@ -1516,52 +1584,9 @@ async def detect_orcamento_tables(
         logger.error("detect-tables: falha na identificação com Camelot: %s", exc)
         raise HTTPException(status_code=500, detail=f"Erro ao analisar PDF: {exc}") from exc
 
-    plumber_options = _pdfplumber_detect_options(file_path)
-    camelot_max_rows = max((int(o.get("row_count") or 0) for o in options), default=0)
-
-    if not options or camelot_max_rows < 10:
-        logger.info(
-            "detect-tables: usando pdfplumber (%s candidatos; Camelot tinha %s)",
-            len(plumber_options),
-            len(options),
-        )
-        options = plumber_options
+    fallback_used = False
+    if not options:
         fallback_used = True
-    else:
-        seen_ids = {str(o.get("id")) for o in options}
-        for po in plumber_options:
-            if int(po.get("row_count") or 0) < 15:
-                continue
-            page_num = int(po.get("pagina") or 0)
-            camelot_on_page = [
-                o for o in options if int(o.get("pagina") or 0) == page_num
-            ]
-            best_camelot = max(
-                (int(o.get("row_count") or 0) for o in camelot_on_page),
-                default=0,
-            )
-            if int(po.get("row_count") or 0) <= best_camelot * 2:
-                continue
-            if po.get("id") not in seen_ids:
-                options.append(po)
-                seen_ids.add(str(po.get("id")))
-        options.sort(
-            key=lambda o: (
-                -int(o.get("budget_score") or 0),
-                -int(o.get("row_count") or 0),
-                int(o.get("pagina") or 0),
-            )
-        )
-        fallback_used = False
-
-    recommended_ids = [
-        str(o["id"])
-        for o in sorted(
-            options,
-            key=lambda o: (-int(o.get("budget_score") or 0), -int(o.get("row_count") or 0)),
-        )[:8]
-        if o.get("is_budget_likely")
-    ]
 
     _OFFLINE_CACHE.setdefault(upload_id, {})
     _OFFLINE_CACHE[upload_id]["table_candidates"] = options
@@ -1574,7 +1599,6 @@ async def detect_orcamento_tables(
         "upload_id": upload_id,
         "tables_found": len(options),
         "options": options,
-        "recommended_table_ids": recommended_ids,
         "mock_fallback": fallback_used,
     }
 
@@ -1596,9 +1620,12 @@ def _normalize_analytic_items(raw_items: List[Any]) -> List[Dict[str, Any]]:
             it.get("valor_unitario")
             or it.get("valor_unitário")
             or it.get("unit_value")
+            or it.get("unitPrice")
         )
         vt = _coerce_number(it.get("valor_total") or it.get("total"))
-        if vt <= 0 and q and vu:
+        if vu <= 0 and vt > 0 and q > 0:
+            vu = vt / q
+        if vt <= 0 and q > 0 and vu > 0:
             vt = q * vu
         normalized.append(
             {
@@ -1704,6 +1731,13 @@ async def process_orcamento_confirmed(
 
         candidate_name = str((selected_candidate or {}).get("nome_tabela") or "")
         table_image_b64 = (selected_candidate or {}).get("imagem_base64")
+        if _rows_likely_missing_prices(rows):
+            logger.info(
+                "Colunas de preço vazias em %s (pág %s) — IA usará página inteira",
+                t_id,
+                page,
+            )
+            table_image_b64 = None
 
         logger.info(
             "Processando candidato %s → %s na página %s (%s linhas, imagem=%s)",
@@ -1747,6 +1781,22 @@ async def process_orcamento_confirmed(
                             "table_id": resolved_table_id,
                             "provider": "local:budget_parser_fallback",
                             "resumo": {"total_items": len(items_this_table)},
+                        }
+                    )
+            elif _items_all_missing_prices(items_this_table):
+                logger.warning(
+                    "IA retornou itens sem preços para %s (pág %s). Tentando parser local.",
+                    t_id,
+                    page,
+                )
+                parser_items = _items_from_rows_fallback(rows, page)
+                if parser_items and not _items_all_missing_prices(parser_items):
+                    items_this_table = parser_items
+                    ia_metadata_list.append(
+                        {
+                            "table_id": resolved_table_id,
+                            "provider": "local:budget_parser_fallback_prices",
+                            "resumo": {"total_items": len(parser_items)},
                         }
                     )
 
@@ -3333,8 +3383,8 @@ class ExportXlsxRequest(BaseModel):
     items: List[Dict[str, Any]] = Field(default_factory=list)
     modelos_selecionados: Dict[str, bool] = Field(
         default_factory=lambda: {
-            "analitico": True,
-            "sintetico": True,
+            "analitico": False,
+            "sintetico": False,
             "curva_abc": True,
         }
     )

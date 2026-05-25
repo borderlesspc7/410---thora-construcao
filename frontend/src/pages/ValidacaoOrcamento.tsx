@@ -32,12 +32,11 @@ import {
   calcularResumoAbc,
   parseEditableNumber,
   unitPriceSemBdiFromComBdi,
+  resolveStructuredItemPricing,
   isExecutiveItem,
 } from "../features/orcamentos/recalcularCurvaABC";
 import type { NovoOrcamentoFlowState } from "../features/orcamentos/outputModels";
-import { DEFAULT_OUTPUT_MODELS } from "../features/orcamentos/outputModels";
-import { NOVO_ORCAMENTO_WIZARD_STEPS } from "../features/orcamentos/novoOrcamentoWizard";
-import { WizardStepper } from "../components/WizardStepper";
+import { CURVA_ABC_ONLY } from "../features/orcamentos/outputModels";
 
 // --- CONFIGURAÇÃO OBRIGATÓRIA DO WORKER (PARA VITE) ---
 // `?url` faz o Vite emitir o arquivo estático com URL correta (evita CORS do CDN e 404 por path relativo a esta página).
@@ -121,10 +120,7 @@ const mapStructuredItemsToValidation = (
       continue;
     }
 
-    const qty = toNumber(item.quantidade ?? item.Quantidade);
-    const bdi = toBdiPercent(item.bdi ?? item.BDI);
-    const unitComBdi = toNumber(item.valor_unitario ?? item["Valor Unitário"]);
-    const unitPrice = unitPriceSemBdiFromComBdi(unitComBdi, bdi);
+    const { qty, bdi, unitPrice } = resolveStructuredItemPricing(item);
 
     mapped.push({
       id: ++id,
@@ -160,13 +156,18 @@ const mapStoredItemsToValidation = (rawItems: unknown[]): ItemOrcamento[] => {
 
     const qty = toNumber(item.quantidade ?? item.quantity ?? item.qty);
     const bdi = toBdiPercent(item.bdi);
+    const pricing = resolveStructuredItemPricing({
+      quantidade: qty,
+      valor_unitario: item.valor_unitario ?? item.unitValue,
+      unitPrice: item.unitPrice,
+      valor_total: item.valor_total ?? item.totalValue,
+      totalValue: item.totalValue,
+      bdi,
+    });
     const unitFromStore =
-      item.unitPrice !== undefined
+      item.unitPrice !== undefined && Number(item.unitPrice) > 0
         ? toNumber(item.unitPrice)
-        : unitPriceSemBdiFromComBdi(
-            toNumber(item.valor_unitario ?? item.unitValue),
-            bdi,
-          );
+        : pricing.unitPrice;
 
     mapped.push({
       id: ++id,
@@ -177,7 +178,7 @@ const mapStoredItemsToValidation = (rawItems: unknown[]): ItemOrcamento[] => {
       description,
       bdi,
       unit: String(item.unidade ?? item.unit ?? "un").trim() || "un",
-      qty,
+      qty: pricing.qty || qty,
       unitPrice: unitFromStore,
       lineTotal: 0,
       selected: false,
@@ -206,13 +207,6 @@ export default function ValidacaoOrcamento() {
   const resolvedUploadId =
     (flowState?.uploadId as string | undefined) ?? uploadIdFromRoute;
 
-  const [nomeProjeto, setNomeProjeto] = useState(
-    () => (flowState?.nomeProjeto as string | undefined)?.trim() || "",
-  );
-  const [modelosSelecionados, setModelosSelecionados] = useState(
-    () => flowState?.modelosSelecionados ?? { ...DEFAULT_OUTPUT_MODELS },
-  );
-
   // States da Planilha
   const [items, setItems] = useState<ItemOrcamento[]>([]);
   const [isLoading, setIsLoading] = useState(true);
@@ -231,9 +225,6 @@ export default function ValidacaoOrcamento() {
   const [numPages, setNumPages] = useState<number>(0);
   const [pageNumber, setPageNumber] = useState<number>(1);
   const [scale, setScale] = useState<number>(1.0); // Zoom
-
-  const tituloProjeto =
-    nomeProjeto.trim() || "Validação do orçamento";
 
   const selectedTablePreviews = useMemo(() => {
     const raw = flowState?.selectedTablePreviews as SelectedTablePreview[] | undefined;
@@ -257,13 +248,6 @@ export default function ValidacaoOrcamento() {
     const load = async () => {
       setIsLoading(true);
       setLoadError("");
-
-      if (flowState?.nomeProjeto?.trim()) {
-        setNomeProjeto(flowState.nomeProjeto.trim());
-      }
-      if (flowState?.modelosSelecionados) {
-        setModelosSelecionados(flowState.modelosSelecionados);
-      }
 
       if (flowState?.file) {
         setPdfFile(flowState.file);
@@ -321,13 +305,6 @@ export default function ValidacaoOrcamento() {
         }
 
         setItems(applyAbcToItems(mapStoredItemsToValidation(rawItems)));
-
-        if (firebaseDoc?.nomeProjeto?.trim()) {
-          setNomeProjeto(firebaseDoc.nomeProjeto.trim());
-        }
-        if (firebaseDoc?.modelosSelecionados) {
-          setModelosSelecionados(firebaseDoc.modelosSelecionados);
-        }
 
         if (pdfBlob) {
           setPdfFile(
@@ -607,8 +584,7 @@ export default function ValidacaoOrcamento() {
     setIsExporting(true);
     try {
       await exportToXLSX(items, {
-        modelosSelecionados,
-        nomeProjeto: nomeProjeto.trim() || undefined,
+        modelosSelecionados: CURVA_ABC_ONLY,
       });
       toast.success("Planilha exportada", {
         description: "O download do XLSX deve iniciar em instantes.",
@@ -673,8 +649,6 @@ export default function ValidacaoOrcamento() {
         userId: user.uid,
         uploadId,
         filename,
-        nomeProjeto: nomeProjeto.trim() || undefined,
-        modelosSelecionados,
         uploadedAt: new Date(),
         extractedAt: new Date(),
         updatedAt: new Date(),
@@ -712,10 +686,6 @@ export default function ValidacaoOrcamento() {
         onCancel={() => setDeleteItemId(null)}
       />
 
-      <div className="shrink-0 border-b border-slate-200 bg-slate-50/90 px-4 py-4 sm:px-6">
-        <WizardStepper steps={NOVO_ORCAMENTO_WIZARD_STEPS} currentStep={3} />
-      </div>
-
       <header className="z-20 flex min-h-16 shrink-0 flex-wrap items-center justify-between gap-3 border-b border-slate-200 bg-white px-4 py-3 shadow-sm sm:px-6">
         <div className="flex min-w-0 items-center gap-3">
           <button
@@ -728,15 +698,12 @@ export default function ValidacaoOrcamento() {
           </button>
           <div className="min-w-0">
             <h1 className="truncate text-2xl font-bold leading-tight text-slate-900">
-              {tituloProjeto}
+              Validação do orçamento
             </h1>
             <p className="flex flex-wrap items-center gap-1 text-xs text-slate-500">
-              <span className="rounded-md bg-violet-100 px-1.5 py-0.5 font-semibold text-violet-800">
-                Passo 3
-              </span>
               {isLoading
                 ? "Carregando…"
-                : `Ajuste dos valores · ${items.length} itens`}
+                : `Ajuste dos valores · ${items.length} itens · Curva ABC`}
               {pdfFile?.name ? (
                 <span className="hidden truncate sm:inline" title={pdfFile.name}>
                   · {pdfFile.name}
@@ -783,7 +750,6 @@ export default function ValidacaoOrcamento() {
                 state: {
                   items: selectedItems,
                   uploadId,
-                  nomeProjeto: nomeProjeto.trim(),
                 },
               });
             }}

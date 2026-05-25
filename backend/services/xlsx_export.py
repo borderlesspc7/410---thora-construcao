@@ -18,8 +18,8 @@ except ImportError:
     Workbook = None  # type: ignore
 
 DEFAULT_MODELS = {
-    "analitico": True,
-    "sintetico": True,
+    "analitico": False,
+    "sintetico": False,
     "curva_abc": True,
 }
 
