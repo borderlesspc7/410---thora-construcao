@@ -1,19 +1,30 @@
 import type { WizardStep } from "../../components/WizardStepper";
 
-export const NOVO_ORCAMENTO_WIZARD_STEPS: WizardStep[] = [
+/** Passos do fluxo de análise Curva ABC (PDF → tabelas → IA → validação). */
+export const ANALISE_ABC_WIZARD_STEPS: WizardStep[] = [
   {
     id: 1,
-    label: "Projeto e PDF",
-    description: "Nome, modelos de Excel e envio do arquivo",
+    label: "PDF",
+    description: "Envie o PDF do orçamento para análise",
   },
   {
     id: 2,
     label: "Tabelas",
-    description: "Escolha as tabelas do orçamento no PDF",
+    description: "Selecione as tabelas com os itens do orçamento",
   },
   {
     id: 3,
+    label: "Análise IA",
+    description: "A IA extrai os dados e monta a Curva ABC",
+  },
+  {
+    id: 4,
     label: "Validação",
-    description: "Revise valores e exporte os arquivos",
+    description: "Revise valores, ajuste dados e exporte a planilha",
   },
 ];
+
+/** @deprecated Use ANALISE_ABC_WIZARD_STEPS */
+export const NOVO_ORCAMENTO_WIZARD_STEPS = ANALISE_ABC_WIZARD_STEPS;
+
+export const ANALISE_ABC_VALIDATION_STEP = 4;

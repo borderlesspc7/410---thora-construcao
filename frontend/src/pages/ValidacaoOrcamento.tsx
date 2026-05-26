@@ -37,6 +37,11 @@ import {
 } from "../features/orcamentos/recalcularCurvaABC";
 import type { NovoOrcamentoFlowState } from "../features/orcamentos/outputModels";
 import { CURVA_ABC_ONLY } from "../features/orcamentos/outputModels";
+import { WizardStepper } from "../components/WizardStepper";
+import {
+  ANALISE_ABC_VALIDATION_STEP,
+  ANALISE_ABC_WIZARD_STEPS,
+} from "../features/orcamentos/novoOrcamentoWizard";
 
 // --- CONFIGURAÇÃO OBRIGATÓRIA DO WORKER (PARA VITE) ---
 // `?url` faz o Vite emitir o arquivo estático com URL correta (evita CORS do CDN e 404 por path relativo a esta página).
@@ -241,7 +246,7 @@ export default function ValidacaoOrcamento() {
 
   useEffect(() => {
     if (!uploadIdFromRoute && !flowState?.structuredData && !flowState?.extractedData) {
-      navigate("/validacao", { replace: true });
+      navigate("/orcamento", { replace: true });
       return;
     }
 
@@ -686,24 +691,34 @@ export default function ValidacaoOrcamento() {
         onCancel={() => setDeleteItemId(null)}
       />
 
+      <div className="shrink-0 border-b border-slate-200 bg-slate-50/90 px-4 py-4 sm:px-6">
+        <WizardStepper
+          steps={ANALISE_ABC_WIZARD_STEPS}
+          currentStep={ANALISE_ABC_VALIDATION_STEP}
+        />
+      </div>
+
       <header className="z-20 flex min-h-16 shrink-0 flex-wrap items-center justify-between gap-3 border-b border-slate-200 bg-white px-4 py-3 shadow-sm sm:px-6">
         <div className="flex min-w-0 items-center gap-3">
           <button
             type="button"
-            onClick={() => navigate("/validacao")}
+            onClick={() => navigate("/orcamento")}
             className={iconButton}
-            aria-label="Voltar à lista de validação"
+            aria-label="Voltar para nova análise"
           >
             <ArrowLeft className="h-5 w-5" />
           </button>
           <div className="min-w-0">
             <h1 className="truncate text-2xl font-bold leading-tight text-slate-900">
-              Validação do orçamento
+              Validação — Curva ABC
             </h1>
             <p className="flex flex-wrap items-center gap-1 text-xs text-slate-500">
+              <span className="rounded-md bg-violet-100 px-1.5 py-0.5 font-semibold text-violet-800">
+                Passo {ANALISE_ABC_VALIDATION_STEP}
+              </span>
               {isLoading
                 ? "Carregando…"
-                : `Ajuste dos valores · ${items.length} itens · Curva ABC`}
+                : `Revise os dados · ${items.length} itens · exporte ou ajuste valores`}
               {pdfFile?.name ? (
                 <span className="hidden truncate sm:inline" title={pdfFile.name}>
                   · {pdfFile.name}
@@ -740,7 +755,7 @@ export default function ValidacaoOrcamento() {
             onClick={() => {
               if (selectedItemsCount === 0) {
                 toast.warning("Selecione itens", {
-                  description: "Marque ao menos um item para analisar na Curva ABC.",
+                  description: "Marque ao menos um item para ver o detalhe na Curva ABC.",
                 });
                 return;
               }

@@ -877,7 +877,8 @@ def _resolve_rows_for_candidate(
     camelot_tables: Any,
 ) -> Tuple[List[List[Any]], int, str]:
     """
-    Resolve a melhor matriz de linhas para o candidato (Camelot + pdfplumber na mesma página).
+    Resolve a matriz de linhas para o candidato escolhido na detecção.
+    Prioriza as linhas cacheadas em detect-tables (mesmo recorte que o usuário viu).
     """
     page_hint = 1
     if selected_candidate:
@@ -886,6 +887,18 @@ def _resolve_rows_for_candidate(
             or selected_candidate.get("pagina")
             or 1
         )
+        cached_rows = selected_candidate.get("rows")
+        if isinstance(cached_rows, list) and cached_rows:
+            nonempty = _count_nonempty_table_rows(cached_rows)
+            if nonempty >= 3:
+                logger.info(
+                    "Tabela %s resolvida via cache detect-tables (pág %s, %s linhas, %s com conteúdo)",
+                    candidate_id,
+                    page_hint,
+                    len(cached_rows),
+                    nonempty,
+                )
+                return cached_rows, page_hint, candidate_id
 
     options: List[Tuple[str, List[List[Any]], int, str, int]] = []
     camelot_idx = _candidate_camelot_index(candidate_id)
@@ -893,22 +906,26 @@ def _resolve_rows_for_candidate(
     if camelot_tables is not None and camelot_idx is not None:
         try:
             ct = camelot_tables[camelot_idx]
-            rows = _camelot_table_to_rows(ct)
-            options.append(
-                (
-                    "camelot_index",
-                    rows,
-                    int(ct.page),
-                    candidate_id,
-                    _count_nonempty_table_rows(rows),
+            ct_page = int(ct.page)
+            if ct_page == page_hint:
+                rows = _camelot_table_to_rows(ct)
+                options.append(
+                    (
+                        "camelot_index",
+                        rows,
+                        ct_page,
+                        candidate_id,
+                        _count_nonempty_table_rows(rows),
+                    )
                 )
-            )
         except (IndexError, AttributeError, TypeError) as exc:
             logger.warning("Falha ao ler Camelot[%s] para %s: %s", camelot_idx, candidate_id, exc)
 
     if camelot_tables is not None:
         for idx, ct in enumerate(camelot_tables):
             if int(ct.page) != page_hint:
+                continue
+            if camelot_idx is not None and idx == camelot_idx:
                 continue
             rows = _camelot_table_to_rows(ct)
             options.append(
@@ -948,10 +965,11 @@ def _resolve_rows_for_candidate(
         )
 
     if options:
-        # Prioriza mais linhas com conteúdo; em empate, prefere pdfplumber na página correta
         def score(option: Tuple[str, List[List[Any]], int, str, int]) -> Tuple[int, int]:
             source, _, page, _, nonempty = option
-            if source.startswith("pdfplumber"):
+            if source == "camelot_index":
+                source_rank = 4
+            elif source.startswith("pdfplumber"):
                 source_rank = 3
             elif source.startswith("camelot_page"):
                 source_rank = 2
@@ -971,7 +989,7 @@ def _resolve_rows_for_candidate(
             len(rows),
             nonempty,
         )
-        return rows, page, resolved_id
+        return rows, page, candidate_id
 
     logger.warning("Nenhuma linha encontrada para candidato %s (página %s)", candidate_id, page_hint)
     return [], page_hint, candidate_id
@@ -1567,15 +1585,20 @@ async def detect_orcamento_tables(
                 b64 = base64.b64encode(img_bytes).decode("utf-8")
                 
                 camelot_rows = _camelot_table_to_rows(table)
+                nonempty = _count_nonempty_table_rows(camelot_rows)
+                if nonempty < 3:
+                    continue
                 options.append({
                     "id": f"table-{idx}",
                     "pagina": page_num,
                     "coordenadas": [x0, y0, x1, y1],
                     "imagem_base64": b64,
-                    "nome_tabela": f"Tabela {idx + 1} (Pág {page_num})",
+                    "nome_tabela": f"Tabela {idx + 1} (Pág {page_num}, {nonempty} linhas)",
                     "num_pagina": page_num,
                     "preview_texto": _preview_text_for_table_rows(camelot_rows)
                     or "Visualização disponível via imagem.",
+                    "row_count": nonempty,
+                    "rows": camelot_rows,
                 })
             
             doc.close()
@@ -1692,6 +1715,19 @@ async def process_orcamento_confirmed(
     if not ids_to_process:
         raise HTTPException(status_code=400, detail="Nenhuma tabela selecionada")
 
+    candidate_ids = {str(c.get("id")) for c in table_candidates if c.get("id")}
+    unknown_ids = [t_id for t_id in ids_to_process if t_id and t_id not in candidate_ids]
+    if unknown_ids:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Tabela(s) selecionada(s) não correspondem à detecção atual: "
+                f"{', '.join(unknown_ids)}. Volte ao passo anterior e selecione novamente."
+            ),
+        )
+
+    logger.info("process-confirmed: upload=%s tabelas=%s", upload_id, ids_to_process)
+
     combined_items = []
     combined_resumo = {"total_items": 0, "valor_total": 0.0, "metodo": "gpt-4o (multi-table)"}
     ia_metadata_list = []
@@ -1706,6 +1742,11 @@ async def process_orcamento_confirmed(
             (item for item in table_candidates if item.get("id") == t_id),
             None,
         )
+        if not selected_candidate:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Tabela {t_id} não encontrada entre as opções detectadas.",
+            )
 
         rows, page, resolved_table_id = _resolve_rows_for_candidate(
             t_id,
@@ -1721,11 +1762,13 @@ async def process_orcamento_confirmed(
             )
 
         if _count_nonempty_table_rows(rows) < 3:
+            label = str(selected_candidate.get("nome_tabela") or t_id)
             raise HTTPException(
                 status_code=400,
                 detail=(
-                    f"A tabela {t_id} (página {page}) tem poucas linhas ({len(rows)}). "
-                    "Selecione outra tabela com o orçamento detalhado."
+                    f"A tabela selecionada \"{label}\" ({t_id}, página {page}) tem poucas linhas "
+                    f"({len(rows)}). Escolha outra tabela com o orçamento detalhado "
+                    "(Código, Descrição, Qtde, Preço)."
                 ),
             )
 

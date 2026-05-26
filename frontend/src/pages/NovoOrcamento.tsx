@@ -5,6 +5,8 @@ import { useNavigate } from "react-router-dom";
 import { toast } from "sonner";
 import { btnPrimary } from "../components/ui/buttonClasses";
 import { TableSelector, type MockTableOption } from "../components/TableSelector";
+import { WizardStepper } from "../components/WizardStepper";
+import { ANALISE_ABC_WIZARD_STEPS } from "../features/orcamentos/novoOrcamentoWizard";
 import {
   detectOrcamentoTables,
   processOrcamentoConfirmed,
@@ -12,6 +14,21 @@ import {
 } from "../services/api";
 
 type FlowPhase = "pick_file" | "uploading" | "detecting" | "selecting_table" | "processing_ai";
+
+function getWizardStep(phase: FlowPhase): number {
+  switch (phase) {
+    case "pick_file":
+    case "uploading":
+      return 1;
+    case "detecting":
+    case "selecting_table":
+      return 2;
+    case "processing_ai":
+      return 3;
+    default:
+      return 1;
+  }
+}
 
 export default function NovoOrcamento() {
   const navigate = useNavigate();
@@ -76,6 +93,16 @@ export default function NovoOrcamento() {
 
       setTableOptions(mappedOptions);
       setSelectedTableIds([]);
+      if (mappedOptions.length === 0) {
+        setPhase("pick_file");
+        setErrorMessage(
+          "Nenhuma tabela com dados suficientes foi encontrada. Verifique se o PDF contém planilha analítica.",
+        );
+        toast.error("Nenhuma tabela válida", {
+          description: "O PDF não retornou tabelas com linhas suficientes para análise.",
+        });
+        return;
+      }
       setPhase("selecting_table");
       toast.success("Tabelas encontradas", {
         description: "Selecione a tabela correta para continuar.",
@@ -105,6 +132,11 @@ export default function NovoOrcamento() {
     );
 
     try {
+      const selectedLabels = selectedTableIds
+        .map((id) => tableOptions.find((t) => t.id === id)?.name || id)
+        .join(", ");
+      console.info("[Curva ABC] Tabelas enviadas ao backend:", selectedTableIds, selectedLabels);
+
       const result = await processOrcamentoConfirmed(uploadId, selectedTableIds);
       const selectedTablePreviews = selectedTableIds
         .map((id) => tableOptions.find((t) => t.id === id))
@@ -141,20 +173,28 @@ export default function NovoOrcamento() {
   const showUploadProgress = phase === "uploading" || phase === "detecting";
   const showTablePhase =
     phase === "detecting" || phase === "selecting_table" || phase === "processing_ai";
+  const wizardStep = getWizardStep(phase);
 
   return (
-    <div className="flex flex-1 flex-col items-center overflow-auto bg-slate-50 px-6 py-12">
-      <h1 className="text-2xl font-semibold text-slate-900">Novo Orçamento</h1>
+    <div className="mx-auto w-full max-w-5xl px-4 py-6 pb-12 sm:px-6">
+      <header className="mb-5">
+        <h1 className="text-xl font-bold text-slate-900 sm:text-2xl">Análise Curva ABC</h1>
+        <p className="mt-1 text-sm text-slate-600">
+          Passo {wizardStep} de {ANALISE_ABC_WIZARD_STEPS.length} — envie o PDF, selecione as
+          tabelas e a IA montará os dados para validação.
+        </p>
+      </header>
 
-      <p className="mt-2 max-w-xl text-center text-slate-600">
-        Envie o PDF, escolha a tabela do orçamento e processe com a OpenAI antes da
-        validação e da Curva ABC.
-      </p>
+      <WizardStepper
+        steps={ANALISE_ABC_WIZARD_STEPS}
+        currentStep={wizardStep}
+        className="mb-6"
+      />
 
       {!file ? (
         <div
           {...getRootProps()}
-          className={`mt-8 w-full max-w-2xl cursor-pointer rounded-xl border-2 border-dashed p-10 text-center transition duration-200 ${
+          className={`mt-4 w-full cursor-pointer rounded-xl border-2 border-dashed p-10 text-center transition duration-200 ${
             isDragActive
               ? "border-blue-500 bg-blue-50"
               : "border-blue-200 bg-white hover:border-blue-400 hover:bg-blue-50/30"
@@ -179,8 +219,8 @@ export default function NovoOrcamento() {
           <p className="mt-2 text-xs text-slate-400">Suporta arquivos PDF de até 50MB</p>
         </div>
       ) : (
-        <div className="mt-8 flex w-full max-w-5xl flex-col items-stretch">
-          <div className="relative w-full max-w-2xl overflow-hidden rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
+        <div className="mt-4 flex w-full flex-col items-stretch">
+          <div className="relative w-full overflow-hidden rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
             <div className="flex items-center gap-4">
               <div className="rounded-lg bg-red-50 p-3" aria-hidden="true">
                 <FileText className="h-8 w-8 text-red-500" />
@@ -222,9 +262,9 @@ export default function NovoOrcamento() {
 
             {phase === "processing_ai" && (
               <div className="mt-4 border-t border-slate-100 pt-4" role="status" aria-live="polite">
-                <div className="mb-2 flex items-center gap-2 text-sm font-medium text-blue-600">
+                <div className="mb-2 flex items-center gap-2 text-sm font-medium text-violet-700">
                   <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
-                  Processando com IA…
+                  Passo 3 — IA analisando tabelas e montando a Curva ABC…
                 </div>
                 <div className="h-1.5 w-full overflow-hidden rounded-full bg-slate-100">
                   <div className="h-full w-full animate-pulse rounded-full bg-blue-600" />
@@ -244,7 +284,7 @@ export default function NovoOrcamento() {
             <button
               type="button"
               onClick={() => void handleStartFlow()}
-              className={`${btnPrimary} mt-6 w-full max-w-2xl self-center py-3`}
+              className={`${btnPrimary} mt-6 w-full py-3`}
               aria-label="Enviar arquivo e detectar tabelas"
             >
               Enviar e escolher tabela
@@ -259,6 +299,7 @@ export default function NovoOrcamento() {
               selectedIds={selectedTableIds}
               onSelect={handleSelectTable}
               onConfirm={handleConfirmSelection}
+              confirmLabel="Analisar com IA"
             />
           )}
         </div>

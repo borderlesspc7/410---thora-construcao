@@ -336,7 +336,7 @@ const CurvaABC: React.FC = () => {
         <div className="flex items-center gap-4 mb-8">
           <button
             type="button"
-            onClick={() => navigate("/validacao")}
+            onClick={() => navigate(uploadId ? `/validacao/${uploadId}` : "/orcamento")}
             className="rounded-lg p-2 text-slate-600 transition hover:bg-slate-200"
             aria-label="Voltar para validação"
           >
@@ -647,7 +647,7 @@ const CurvaABC: React.FC = () => {
         {/* Botões de Ação */}
         <div className="flex gap-4 justify-between">
           <button
-            onClick={() => navigate("/validacao")}
+            onClick={() => navigate(uploadId ? `/validacao/${uploadId}` : "/orcamento")}
             className="px-6 py-2 bg-slate-200 text-slate-800 rounded-lg hover:bg-slate-300 transition font-medium"
           >
             ← Voltar

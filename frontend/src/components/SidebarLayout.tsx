@@ -8,7 +8,6 @@ import {
   X,
   LogOut,
   Upload,
-  ClipboardCheck,
 } from "lucide-react";
 import { signOutCurrentUser } from "../features/auth/authService";
 
@@ -27,13 +26,22 @@ const SidebarLayout: React.FC<SidebarLayoutProps> = ({ children }) => {
   }, [location.pathname]);
 
   const isActive = (path: string) => {
-    return location.pathname === path || location.pathname.startsWith(path + "/");
+    if (path === "/orcamento") {
+      return (
+        location.pathname === path ||
+        location.pathname.startsWith(`${path}/`) ||
+        location.pathname.startsWith("/validacao") ||
+        location.pathname.startsWith("/curva-abc")
+      );
+    }
+    return (
+      location.pathname === path || location.pathname.startsWith(`${path}/`)
+    );
   };
 
   const menuItems = [
     { path: "/", label: "Dashboard", icon: Home },
-    { path: "/orcamento", label: "Novo Orçamento", icon: Upload },
-    { path: "/validacao", label: "Validação", icon: ClipboardCheck },
+    { path: "/orcamento", label: "Curva ABC", icon: Upload },
     { path: "/relatorios", label: "Relatórios", icon: BarChart3 },
   ];
 
@@ -61,7 +69,11 @@ const SidebarLayout: React.FC<SidebarLayoutProps> = ({ children }) => {
           }`}
         >
           {sidebarOpen && (
-            <Link to="/" className="flex items-center gap-2" onClick={() => setMobileNavOpen(false)}>
+            <Link
+              to="/"
+              className="flex items-center gap-2"
+              onClick={() => setMobileNavOpen(false)}
+            >
               <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-blue-500 font-bold">
                 T
               </div>
@@ -73,9 +85,15 @@ const SidebarLayout: React.FC<SidebarLayoutProps> = ({ children }) => {
               type="button"
               onClick={() => setSidebarOpen(!sidebarOpen)}
               className="hidden rounded-lg p-2 transition hover:bg-slate-700 lg:inline-flex"
-              aria-label={sidebarOpen ? "Recolher menu lateral" : "Expandir menu lateral"}
+              aria-label={
+                sidebarOpen ? "Recolher menu lateral" : "Expandir menu lateral"
+              }
             >
-              {sidebarOpen ? <X className="h-5 w-5" /> : <Menu className="h-5 w-5" />}
+              {sidebarOpen ? (
+                <X className="h-5 w-5" />
+              ) : (
+                <Menu className="h-5 w-5" />
+              )}
             </button>
             <button
               type="button"
