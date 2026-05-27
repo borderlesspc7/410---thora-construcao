@@ -8,6 +8,13 @@ export const DEFAULT_OUTPUT_MODELS: OutputModelsSelection = {
   curva_abc: true,
 };
 
+/** Apenas Orçamento Analítico hierárquico. */
+export const ANALITICO_ONLY: OutputModelsSelection = {
+  analitico: true,
+  sintetico: false,
+  curva_abc: false,
+};
+
 /** Único modelo ativo no fluxo atual (Curva ABC). */
 export const CURVA_ABC_ONLY: OutputModelsSelection = {
   analitico: false,
@@ -49,6 +56,11 @@ export type NovoOrcamentoFlowState = {
   selectedTableIds?: string[];
   selectedTablePreviews?: unknown[];
   extractedData?: unknown[];
-  structuredData?: { items?: unknown[]; resumo?: unknown };
+  structuredData?: {
+    items?: unknown[];
+    hierarchicalItems?: unknown[];
+    resumo?: unknown;
+  };
+  hierarchicalItems?: unknown[];
   iaMetadata?: unknown;
 };

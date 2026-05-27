@@ -3,6 +3,7 @@ import Dashboard from "./pages/Dashboard";
 import NovoOrcamento from "./pages/NovoOrcamento";
 import ValidacaoOrcamento from "./pages/ValidacaoOrcamento";
 import CurvaABC from "./pages/CurvaABC";
+import OrcamentoAnalitico from "./pages/OrcamentoAnalitico";
 import Reports from "./pages/Reports";
 import AnaliseDetalhada from "./pages/AnaliseDetalhada";
 import Login from "./pages/Login";
@@ -23,6 +24,8 @@ const App = () => {
         <Route path="/validacao/:uploadId" element={<ValidacaoOrcamento />} />
         <Route path="/validacao" element={<Navigate to="/orcamento" replace />} />
         <Route path="/curva-abc/:uploadId" element={<CurvaABC />} />
+        <Route path="/orcamento-analitico/:uploadId" element={<OrcamentoAnalitico />} />
+        <Route path="/orcamento-analitico" element={<OrcamentoAnalitico />} />
         <Route
           path="/analise-detalhada/:uploadId"
           element={<AnaliseDetalhada />}

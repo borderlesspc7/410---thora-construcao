@@ -74,16 +74,22 @@ EXTRACTION_SYSTEM_PROMPT = (
     "4. LIMPEZA MATEMÁTICA: Remova 'R$' e '%'. Converta padrão brasileiro para float (ex: '3.017,500' → 3017.5; '17.260,10' → 17260.10; '20,81' → 20.81).\n"
     "5. COLUNA BDI (%): Extraia o percentual da coluna BDI de cada linha de serviço (ex: '20,81' ou '20,81%' → 20.81). Não use taxas de páginas de resumo de BDI.\n"
     "6. FÓRMULA DE CONSISTÊNCIA: quantidade × valor_unitario ≈ valor_total (tolerância ~2%). Se não bater, re-leia a linha e corrija o alinhamento das colunas.\n"
-    "7. DIFERENCIE GRUPOS: Linhas só com título de capítulo ou 'Total do grupo' → tipo 'grupo' (serão ignoradas). Linhas com código de serviço e quantidade → tipo 'item'.\n"
-    "8. REMOÇÃO DE LIXO: Ignore cabeçalhos repetidos, 'RESUMO GERAL', 'COMPOSIÇÕES', 'MAPA DE COTAÇÃO', linhas institucionais.\n\n"
+    "7. HIERARQUIA (tipo_linha): Preserve a ordem sequencial do PDF.\n"
+    "   - 'grupo': títulos de capítulo/subgrupo (ex: '1. GRUPO 1: SERVIÇOS DEMOLIÇÃO') ou linhas 'Total do grupo'.\n"
+    "   - 'item': serviços principais com código e quantidade (ex: numeração 1.1, 1.2).\n"
+    "   - 'composicao': insumos/subitens indentados sob um item (composição analítica, ex: 1.1.1).\n"
+    "8. item_numero: numeração hierárquica exata do edital (ex: '1', '1.1', '1.1.1'). Use null se ausente.\n"
+    "9. banco: fonte de referência (SINAPI, SICRO, Próprio, etc.). Use null se não houver.\n"
+    "10. REMOÇÃO DE LIXO: Ignore cabeçalhos repetidos de coluna, 'RESUMO GERAL', 'MAPA DE COTAÇÃO', linhas institucionais.\n"
+    "    NÃO remova linhas de grupo, item ou composição da planilha analítica.\n\n"
     "FORMATO DE SAÍDA OBRIGATÓRIO (JSON):\n"
     "Retorne um array de objetos JSON chamado orcamento_itens seguindo exatamente este schema:\n"
     "{\n"
     '  "orcamento_itens": [\n'
     "    {\n"
-    '      "item": "string",\n'
-    '      "tipo": "grupo|item",\n'
-    '      "banco": "string",\n'
+    '      "item_numero": "string|null",\n'
+    '      "tipo_linha": "grupo|item|composicao",\n'
+    '      "banco": "string|null",\n'
     '      "codigo": "string",\n'
     '      "descricao": "string",\n'
     '      "bdi": 0.0,\n'
@@ -100,6 +106,37 @@ EXTRACTION_USER_PROMPT_HEADER = (
     "Extraia a tabela selecionada seguindo rigorosamente as regras do sistema, em especial o MAPEAMENTO ESPACIAL e o SANITY CHECK (Qtd * VU = Total)."
 )
 
+FULL_PDF_ANALITICO_SYSTEM_PROMPT = (
+    EXTRACTION_SYSTEM_PROMPT
+    + "\n\nMODO DOCUMENTO COMPLETO (Orçamento Analítico NOVACAP):\n"
+    "Analise TODA a página do PDF — não apenas tabelas delimitadas. "
+    "Capture planilhas orçamentárias mesmo quando o layout for textual, multi-coluna ou anexo de edital.\n"
+    "Campos adicionais:\n"
+    "- rotulo_linha: rótulo da linha na coluna A quando aplicável (ex: 'Composição', 'Composição Auxiliar', 'Insumo'); null se usar item_numero.\n"
+    "- tipo_categoria: classificação do item (ex: 'Material', 'Paisagismo - Plantio', 'Mão de Obra'); null se ausente.\n"
+    "- porcentagem: percentual da coluna 'Porcent.' quando existir; 0.0 se ausente.\n"
+    "Preserve a ordem exata de leitura (topo→baixo) dentro de cada página."
+)
+
+FULL_PDF_PAGE_USER_TEMPLATE = (
+    "Extraia TODAS as linhas orçamentárias visíveis nesta página ({page}/{total_pages}) do documento. "
+    "Inclua grupos, subgrupos, itens, composições e insumos. "
+    "Se a página não contiver dados de orçamento, retorne orcamento_itens como array vazio.\n\n"
+    "TEXTO EXTRAÍDO DA PÁGINA (referência; a imagem prevalece):\n{text_snippet}"
+)
+
+_BUDGET_PAGE_KEYWORDS = (
+    "sinapi", "sicro", "orse", "siurb", "agetop", "sco ",
+    "grupo", "composição", "composicao", "insumo",
+    "orçamento", "orcamento", "planilha analítica", "planilha analitica",
+    "planilha orçamentária", "planilha orcamentaria",
+    "valor unit", "preço unit", "preco unit", "quant.", "qtde",
+    "b.d.i", "bdi", "código", "codigo", "demolição", "demolicao",
+    "serviços", "servicos", " und ", "m²", "m3", "m²",
+)
+
+_MAX_FULL_PDF_PAGES = 60
+
 
 EXTRACTION_JSON_SCHEMA = {
     "name": "orcamento_schema",
@@ -112,8 +149,11 @@ EXTRACTION_JSON_SCHEMA = {
                 "items": {
                     "type": "object",
                     "properties": {
-                        "item": {"type": ["string", "null"]},
-                        "tipo": {"type": "string", "enum": ["grupo", "item"]},
+                        "item_numero": {"type": ["string", "null"]},
+                        "tipo_linha": {
+                            "type": "string",
+                            "enum": ["grupo", "item", "composicao"],
+                        },
                         "banco": {"type": ["string", "null"]},
                         "codigo": {"type": "string"},
                         "descricao": {"type": "string"},
@@ -121,11 +161,14 @@ EXTRACTION_JSON_SCHEMA = {
                         "unidade": {"type": "string"},
                         "quantidade": {"type": "number"},
                         "valor_unitario": {"type": "number"},
-                        "valor_total": {"type": "number"}
+                        "valor_total": {"type": "number"},
+                        "rotulo_linha": {"type": ["string", "null"]},
+                        "tipo_categoria": {"type": ["string", "null"]},
+                        "porcentagem": {"type": "number"},
                     },
                     "required": [
-                        "item",
-                        "tipo",
+                        "item_numero",
+                        "tipo_linha",
                         "banco",
                         "codigo",
                         "descricao",
@@ -134,6 +177,9 @@ EXTRACTION_JSON_SCHEMA = {
                         "quantidade",
                         "valor_unitario",
                         "valor_total",
+                        "rotulo_linha",
+                        "tipo_categoria",
+                        "porcentagem",
                     ],
                     "additionalProperties": False
                 }
@@ -384,15 +430,125 @@ async def _extract_with_openai_vision(
     return normalized_items, parsed if isinstance(parsed, dict) else {}, raw_content
 
 
+def _resolve_tipo_linha(item: Dict[str, Any]) -> str:
+    tipo = str(
+        item.get("tipo_linha")
+        or item.get("tipo")
+        or item.get("Tipo")
+        or "item"
+    ).strip().lower()
+    if tipo in ("grupo", "titulo", "título", "title"):
+        return "grupo"
+    if tipo in ("composicao", "composição", "insumo", "subitem"):
+        return "composicao"
+    return "item"
+
+
+def _resolve_item_numero(item: Dict[str, Any]) -> str:
+    return str(
+        item.get("item_numero")
+        or item.get("item")
+        or item.get("Item")
+        or ""
+    ).strip()
+
+
+def _coerce_row_fields(item: Dict[str, Any]) -> Dict[str, Any]:
+    item_number = _resolve_item_numero(item)
+    tipo_linha = _resolve_tipo_linha(item)
+    banco = item.get("banco") or ""
+    codigo = str(item.get("codigo") or item.get("Código") or item.get("code") or "").strip()
+    descricao = item.get("descricao") or item.get("Descrição") or item.get("description") or ""
+    descricao = str(descricao).strip()
+    bdi = _coerce_bdi(item.get("bdi") or item.get("BDI") or item.get("bdi_percentual"))
+    unidade = item.get("unidade") or item.get("Unidade") or item.get("unit") or "un"
+    quantidade = _coerce_number(
+        item.get("quantidade") or item.get("Quantidade") or item.get("qty")
+    )
+    valor_unitario = _coerce_number(
+        item.get("valor_unitario")
+        or item.get("Valor Unitário")
+        or item.get("valor_unitário")
+        or item.get("unit_value")
+    )
+    total = _coerce_number(item.get("valor_total") or item.get("Total") or item.get("total"))
+    quantidade, valor_unitario, total = _apply_line_sanity_check(
+        quantidade, valor_unitario, total
+    )
+    grupo_val = str(
+        item.get("grupo") or item.get("Grupo") or item.get("grupo_hierarquico") or ""
+    ).strip()
+
+    rotulo = str(item.get("rotulo_linha") or "").strip() or None
+    tipo_categoria = str(
+        item.get("tipo_categoria") or item.get("tipo_item") or item.get("Tipo") or ""
+    ).strip() or None
+    porcentagem = _coerce_number(item.get("porcentagem") or item.get("Porcent.") or item.get("percentual"))
+
+    if rotulo and not item_number:
+        rotulo_lower = rotulo.lower()
+        if rotulo_lower in ("composição", "composicao", "composição auxiliar", "composicao auxiliar", "insumo"):
+            tipo_linha = "composicao"
+
+    return {
+        "item": item_number,
+        "item_numero": item_number,
+        "tipo": tipo_linha,
+        "tipo_linha": tipo_linha,
+        "rotulo_linha": rotulo,
+        "tipo_categoria": tipo_categoria,
+        "porcentagem": porcentagem,
+        "banco": str(banco).strip(),
+        "codigo": codigo,
+        "grupo": grupo_val or None,
+        "descricao": descricao,
+        "bdi": bdi,
+        "unidade": str(unidade).strip() or "un",
+        "quantidade": quantidade,
+        "valor_unitario": valor_unitario,
+        "valor_total": total,
+    }
+
+
 def _should_skip_extracted_row(tipo: str, descricao: str, codigo: str) -> bool:
-    if tipo == "grupo":
-        return True
+    if tipo in ("grupo", "composicao"):
+        return False
     desc_lower = descricao.lower()
     if "total do grupo" in desc_lower:
         return True
     if desc_lower.startswith("total ") and not codigo:
         return True
     return False
+
+
+def _should_skip_hierarchical_row(tipo: str, descricao: str) -> bool:
+    desc_lower = descricao.lower().strip()
+    if not descricao and tipo == "item":
+        return True
+    junk_markers = (
+        "item | descrição",
+        "código | descrição",
+        "codigo | descricao",
+    )
+    if any(marker in desc_lower for marker in junk_markers):
+        return True
+    return False
+
+
+def _normalize_hierarchical_items(raw_items: Any) -> List[Dict[str, Any]]:
+    """Preserva ordem original e todas as linhas hierárquicas (grupo, item, composição)."""
+    if not isinstance(raw_items, list):
+        return []
+
+    normalized: List[Dict[str, Any]] = []
+    for item in raw_items:
+        if not isinstance(item, dict):
+            continue
+        row = _coerce_row_fields(item)
+        if _should_skip_hierarchical_row(row["tipo_linha"], row["descricao"]):
+            continue
+        normalized.append(row)
+    return normalized
 
 
 def _normalize_structured_items(raw_items: Any) -> List[Dict[str, Any]]:
@@ -404,45 +560,13 @@ def _normalize_structured_items(raw_items: Any) -> List[Dict[str, Any]]:
         if not isinstance(item, dict):
             continue
 
-        item_number = item.get("item") or item.get("Item") or item.get("item_numero") or ""
-        tipo = str(item.get("tipo") or "item").strip().lower()
-        banco = item.get("banco") or ""
-        codigo = str(item.get("codigo") or item.get("Código") or item.get("code") or "").strip()
-        descricao = item.get("descricao") or item.get("Descrição") or item.get("description") or ""
-        descricao = str(descricao).strip()
-        if _should_skip_extracted_row(tipo, descricao, codigo):
+        row = _coerce_row_fields(item)
+        if _should_skip_extracted_row(row["tipo_linha"], row["descricao"], row["codigo"]):
             continue
-        bdi = _coerce_bdi(item.get("bdi") or item.get("BDI") or item.get("bdi_percentual"))
-        unidade = item.get("unidade") or item.get("Unidade") or item.get("unit") or "un"
-        quantidade = _coerce_number(item.get("quantidade") or item.get("Quantidade") or item.get("qty"))
-        valor_unitario = _coerce_number(
-            item.get("valor_unitario")
-            or item.get("Valor Unitário")
-            or item.get("valor_unitário")
-            or item.get("unit_value")
-        )
-        total = _coerce_number(item.get("valor_total") or item.get("Total") or item.get("total"))
-        quantidade, valor_unitario, total = _apply_line_sanity_check(
-            quantidade, valor_unitario, total
-        )
+        if row["tipo_linha"] != "item":
+            continue
 
-        grupo_val = str(item.get("grupo") or item.get("Grupo") or item.get("grupo_hierarquico") or "").strip()
-
-        normalized.append(
-            {
-                "item": str(item_number),
-                "tipo": str(tipo).strip(),
-                "banco": str(banco).strip(),
-                "codigo": str(codigo),
-                "grupo": grupo_val or None,
-                "descricao": str(descricao).strip(),
-                "bdi": bdi,
-                "unidade": str(unidade).strip() or "un",
-                "quantidade": quantidade,
-                "valor_unitario": valor_unitario,
-                "valor_total": total,
-            }
-        )
+        normalized.append(row)
     return normalized
 
 
@@ -645,7 +769,12 @@ async def process_selected_table(
             import traceback; traceback.print_exc()
             raise ValueError(f"Falha ao decodificar o JSON retornado pela OpenAI: {e}")
         raw_items = parsed.get("orcamento_itens") if isinstance(parsed, dict) else []
+        hierarchical_items = _normalize_hierarchical_items(raw_items)
         normalized_items = _normalize_structured_items(raw_items)
+        if not normalized_items and hierarchical_items:
+            normalized_items = [
+                row for row in hierarchical_items if row.get("tipo_linha") == "item"
+            ]
         if not normalized_items and raw_content:
             logger.warning(
                 "OpenAI retornou 0 itens úteis para %s (pág %s). raw_chars=%s snippet=%s",
@@ -687,6 +816,12 @@ async def process_selected_table(
                     normalized_items = retry_items
                     parsed = retry_parsed
                     raw_content = retry_raw
+                    retry_raw_items = (
+                        retry_parsed.get("orcamento_itens")
+                        if isinstance(retry_parsed, dict)
+                        else []
+                    )
+                    hierarchical_items = _normalize_hierarchical_items(retry_raw_items)
                     input_audit["image_source"] = "full_page_retry"
                     duration_ms = (time.perf_counter() - t0) * 1000
             except Exception as retry_exc:
@@ -705,6 +840,7 @@ async def process_selected_table(
 
         structured_output = {
             "items": normalized_items,
+            "hierarchical_items": hierarchical_items,
             "resumo": summary,
         }
 
@@ -771,6 +907,216 @@ async def process_selected_table(
         print("OPENAI PARSE/RESPONSE ERROR:", exc)
         import traceback; traceback.print_exc()
         raise OpenAIServiceError(f"A OpenAI retornou uma resposta inválida: {exc}", status_code=502, code="invalid_response") from exc
+
+
+def _extract_page_text(pdf_content: bytes, page_number: int, max_chars: int = 6000) -> str:
+    with pdfplumber.open(BytesIO(pdf_content)) as pdf:
+        if page_number < 1 or page_number > len(pdf.pages):
+            return ""
+        return (pdf.pages[page_number - 1].extract_text() or "")[:max_chars]
+
+
+def _detect_budget_pages(pdf_content: bytes, max_pages: int = _MAX_FULL_PDF_PAGES) -> List[int]:
+    scored: List[Tuple[int, int]] = []
+    with pdfplumber.open(BytesIO(pdf_content)) as pdf:
+        total = min(len(pdf.pages), max_pages)
+        for idx in range(total):
+            page_num = idx + 1
+            text = (pdf.pages[idx].extract_text() or "").lower()
+            if not text.strip():
+                continue
+            score = sum(1 for kw in _BUDGET_PAGE_KEYWORDS if kw in text)
+            if score > 0:
+                scored.append((page_num, score))
+
+    if scored:
+        scored.sort(key=lambda item: item[0])
+        return [page for page, _ in scored]
+
+    with pdfplumber.open(BytesIO(pdf_content)) as pdf:
+        return list(range(1, min(len(pdf.pages), max_pages) + 1))
+
+
+async def _extract_analitico_from_page(
+    client: AsyncOpenAI,
+    *,
+    pdf_content: bytes,
+    page_number: int,
+    total_pages: int,
+) -> List[Dict[str, Any]]:
+    page_text = _extract_page_text(pdf_content, page_number)
+    try:
+        base64_image = _pdf_page_to_base64_image(pdf_content, page_number)
+    except Exception as exc:
+        logger.warning("Imagem indisponível pág %s: %s", page_number, exc)
+        base64_image = None
+
+    user_text = FULL_PDF_PAGE_USER_TEMPLATE.format(
+        page=page_number,
+        total_pages=total_pages,
+        text_snippet=page_text or "(sem texto extraído)",
+    )
+
+    messages: List[Dict[str, Any]] = [
+        {"role": "system", "content": FULL_PDF_ANALITICO_SYSTEM_PROMPT},
+    ]
+    if base64_image:
+        messages.append(
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": user_text},
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": f"data:image/jpeg;base64,{base64_image}",
+                            "detail": "high",
+                        },
+                    },
+                ],
+            }
+        )
+    else:
+        messages.append({"role": "user", "content": user_text})
+
+    response = await client.chat.completions.create(
+        model="gpt-4o-2024-08-06",
+        temperature=0.0,
+        max_tokens=8192,
+        response_format={"type": "json_schema", "json_schema": EXTRACTION_JSON_SCHEMA},
+        messages=messages,
+    )
+    raw_content = response.choices[0].message.content or "{}"
+    if raw_content.startswith("```"):
+        raw_content = raw_content.strip("`").removeprefix("json").strip()
+    parsed = json.loads(raw_content)
+    raw_items = parsed.get("orcamento_itens") if isinstance(parsed, dict) else []
+    return _normalize_hierarchical_items(raw_items)
+
+
+def _extract_document_metadata(
+    hierarchical_items: List[Dict[str, Any]],
+    filename: str | None = None,
+) -> Dict[str, Any]:
+    bancos = sorted(
+        {
+            str(item.get("banco") or "").strip()
+            for item in hierarchical_items
+            if str(item.get("banco") or "").strip()
+        }
+    )
+    bdi_values = [
+        float(item.get("bdi") or 0)
+        for item in hierarchical_items
+        if float(item.get("bdi") or 0) > 0
+    ]
+    obra = (filename or "").replace(".pdf", "").replace(".PDF", "").strip() or None
+    for item in hierarchical_items[:30]:
+        desc = str(item.get("descricao") or "")
+        if item.get("tipo_linha") == "grupo" and len(desc) > 20:
+            obra = desc[:240]
+            break
+
+    return {
+        "nome_obra": obra,
+        "bancos_referencia": "\n".join(bancos) if bancos else "SINAPI / SICRO",
+        "bdi_percent": sum(bdi_values) / len(bdi_values) if bdi_values else None,
+        "encargos_sociais": None,
+    }
+
+
+async def process_full_pdf_analitico(
+    pdf_content: bytes,
+    *,
+    filename: str | None = None,
+    max_pages: int = _MAX_FULL_PDF_PAGES,
+) -> Tuple[Dict[str, Any], str]:
+    """
+    Processa o PDF inteiro página a página (sem seleção de tabelas).
+    Retorna itens hierárquicos na ordem do documento.
+    """
+    _ensure_api_key()
+    t0 = time.perf_counter()
+    client = _get_client()
+    pages = _detect_budget_pages(pdf_content, max_pages=max_pages)
+    if not pages:
+        raise OpenAIServiceError(
+            "Não foi possível ler páginas do PDF.",
+            status_code=422,
+            code="no_pages",
+        )
+
+    combined_hierarchical: List[Dict[str, Any]] = []
+    pages_meta: List[Dict[str, Any]] = []
+
+    for page_num in pages:
+        try:
+            page_items = await _extract_analitico_from_page(
+                client,
+                pdf_content=pdf_content,
+                page_number=page_num,
+                total_pages=len(pages),
+            )
+            for item in page_items:
+                item["_source_page"] = page_num
+            combined_hierarchical.extend(page_items)
+            pages_meta.append({"page": page_num, "items": len(page_items)})
+            logger.info("PDF analítico pág %s: %s linhas", page_num, len(page_items))
+        except Exception as exc:
+            logger.warning("Falha ao extrair pág %s: %s", page_num, exc)
+            pages_meta.append({"page": page_num, "items": 0, "error": str(exc)})
+
+    if not combined_hierarchical:
+        raise OpenAIServiceError(
+            "Nenhuma linha orçamentária encontrada no PDF. "
+            "Verifique se o documento contém planilha analítica ou anexo de orçamento.",
+            status_code=422,
+            code="no_budget_lines",
+        )
+
+    normalized_items = [
+        row
+        for row in combined_hierarchical
+        if row.get("tipo_linha") == "item"
+        and not _should_skip_extracted_row(
+            "item",
+            str(row.get("descricao") or ""),
+            str(row.get("codigo") or ""),
+        )
+    ]
+    metadata = _extract_document_metadata(combined_hierarchical, filename)
+    valor_total = sum(float(item.get("valor_total") or 0) for item in normalized_items)
+    summary = {
+        "total_items": len(normalized_items),
+        "total_linhas": len(combined_hierarchical),
+        "valor_total": valor_total,
+        "paginas_processadas": len(pages),
+        "confianca": 0.85,
+        "metodo": f"{OPENAI_ORCAMENTO_MODEL} (full_pdf)",
+        "metadata": metadata,
+    }
+
+    structured_output = {
+        "items": normalized_items,
+        "hierarchical_items": combined_hierarchical,
+        "resumo": summary,
+        "pages_meta": pages_meta,
+    }
+
+    duration_ms = (time.perf_counter() - t0) * 1000
+    log_ai_exchange(
+        operation="process_full_pdf_analitico",
+        provider="openai",
+        model=OPENAI_ORCAMENTO_MODEL,
+        input_payload={"pages": pages, "filename": filename},
+        output_payload={
+            "hierarchical_count": len(combined_hierarchical),
+            "executive_count": len(normalized_items),
+            "pages_meta": pages_meta,
+        },
+        duration_ms=duration_ms,
+    )
+    return structured_output, f"openai:{OPENAI_ORCAMENTO_MODEL} (full_pdf)"
 
 
 # ---------------------------------------------------------------------------

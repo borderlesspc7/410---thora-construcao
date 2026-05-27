@@ -51,6 +51,7 @@ from firebase_admin import auth as firebase_auth
 from services.openai_service import (
     identify_tables,
     process_selected_table,
+    process_full_pdf_analitico,
     generate_report_chat,
     OpenAIServiceError,
     _coerce_bdi,
@@ -1631,10 +1632,10 @@ def _normalize_analytic_items(raw_items: List[Any]) -> List[Dict[str, Any]]:
     for idx, it in enumerate(raw_items):
         if not isinstance(it, dict):
             continue
-        tipo = str(it.get("tipo") or "item").strip().lower()
+        tipo = str(it.get("tipo_linha") or it.get("tipo") or "item").strip().lower()
         descricao_raw = str(it.get("descricao") or it.get("Descrição") or "").strip()
         desc_lower = descricao_raw.lower()
-        if tipo == "grupo":
+        if tipo in ("grupo", "composicao", "composição"):
             continue
         if "total do grupo" in desc_lower or desc_lower.startswith("total "):
             continue
@@ -1729,6 +1730,7 @@ async def process_orcamento_confirmed(
     logger.info("process-confirmed: upload=%s tabelas=%s", upload_id, ids_to_process)
 
     combined_items = []
+    combined_hierarchical: List[Dict[str, Any]] = []
     combined_resumo = {"total_items": 0, "valor_total": 0.0, "metodo": "gpt-4o (multi-table)"}
     ia_metadata_list = []
     pdf_bytes = file_path.read_bytes()
@@ -1810,6 +1812,7 @@ async def process_orcamento_confirmed(
             )
             
             items_this_table = structured_data.get("items") or []
+            hierarchical_this_table = structured_data.get("hierarchical_items") or []
             if not items_this_table:
                 logger.warning(
                     "IA retornou 0 itens para %s (pág %s, %s linhas). Tentando parser local.",
@@ -1847,6 +1850,10 @@ async def process_orcamento_confirmed(
                 if isinstance(raw_item, dict):
                     raw_item.setdefault("_source_table_id", t_id)
             combined_items.extend(items_this_table)
+            for raw_item in hierarchical_this_table:
+                if isinstance(raw_item, dict):
+                    raw_item.setdefault("_source_table_id", t_id)
+            combined_hierarchical.extend(hierarchical_this_table)
 
             resumo_this = structured_data.get("resumo") or {}
             combined_resumo["total_items"] += int(resumo_this.get("total_items") or len(items_this_table))
@@ -1894,14 +1901,20 @@ async def process_orcamento_confirmed(
         )
 
     combined_items = _deduplicate_orcamento_items(combined_items)
+    if combined_hierarchical:
+        combined_hierarchical = _deduplicate_orcamento_items(combined_hierarchical)
+    else:
+        combined_hierarchical = combined_items
     logger.info(
-        "Itens após deduplicação: %s (tabelas processadas: %s)",
+        "Itens após deduplicação: %s (hierárquicos: %s, tabelas processadas: %s)",
         len(combined_items),
+        len(combined_hierarchical),
         len(ids_to_process),
     )
 
-    # Normalizar os itens combinados
+    # Normalizar os itens combinados (executivos para Curva ABC)
     normalized_items = _normalize_analytic_items(combined_items)
+    structured_items = combined_hierarchical
     
     # Atualizar o resumo final
     combined_resumo["total_items"] = len(normalized_items)
@@ -1922,7 +1935,11 @@ async def process_orcamento_confirmed(
             upload_id=upload_id,
             filename=filename,
             tables=tables_out,
-            items_data={"items": normalized_items, "resumo": combined_resumo},
+            items_data={
+                "items": normalized_items,
+                "hierarchical_items": structured_items,
+                "resumo": combined_resumo,
+            },
             ia_metadata=ia_metadata_final,
         )
     except Exception as exc:
@@ -1930,7 +1947,11 @@ async def process_orcamento_confirmed(
         doc_id = upload_id
 
     _OFFLINE_CACHE.setdefault(upload_id, {})
-    _OFFLINE_CACHE[upload_id]["itemsData"] = {"items": normalized_items, "resumo": combined_resumo}
+    _OFFLINE_CACHE[upload_id]["itemsData"] = {
+        "items": normalized_items,
+        "hierarchical_items": structured_items,
+        "resumo": combined_resumo,
+    }
     _OFFLINE_CACHE[upload_id]["ia_metadata"] = ia_metadata_final
     _save_extracted_cache(upload_id, _OFFLINE_CACHE[upload_id])
 
@@ -1964,9 +1985,101 @@ async def process_orcamento_confirmed(
         "items_found": len(normalized_items),
         "tables": tables_out,
         "items": normalized_items,
+        "structured_items": structured_items,
+        "hierarchical_items": structured_items,
         "resumo": combined_resumo,
         "ia_metadata": ia_metadata_final,
         "message": f"✅ Dados extraídos de {len(ia_metadata_list)} tabela(s) com sucesso",
+    }
+
+
+class ProcessAnaliticoFullRequest(BaseModel):
+    upload_id: str
+
+
+@app.post("/api/orcamentos/process-analitico-full")
+async def process_analitico_full_pdf(
+    payload: ProcessAnaliticoFullRequest,
+    user_id: str = Depends(get_current_user_id),
+):
+    """
+    Processa o PDF inteiro para Orçamento Analítico (sem seleção de tabelas).
+    A IA analisa página a página todo o conteúdo orçamentário do documento.
+    """
+    upload_id = _validate_upload_id(payload.upload_id)
+    file_path = UPLOAD_FOLDER / f"{upload_id}.pdf"
+    if not file_path.exists():
+        raise HTTPException(status_code=404, detail=f"Upload não encontrado: {upload_id}")
+
+    meta = _load_upload_meta(upload_id)
+    expected_user = meta.get("userId")
+    if expected_user and str(expected_user) != str(user_id):
+        raise HTTPException(status_code=403, detail="Acesso negado")
+    if not expected_user and ENVIRONMENT != "development":
+        raise HTTPException(status_code=403, detail="Acesso negado")
+
+    filename = str(meta.get("filename") or file_path.name)
+    pdf_bytes = file_path.read_bytes()
+
+    try:
+        structured_data, provider_used = await process_full_pdf_analitico(
+            pdf_bytes,
+            filename=filename,
+        )
+    except OpenAIServiceError as exc:
+        status = getattr(exc, "status_code", 500) or 500
+        raise HTTPException(status_code=status, detail=str(exc)) from exc
+
+    hierarchical_items = structured_data.get("hierarchical_items") or []
+    normalized_items = structured_data.get("items") or []
+    combined_resumo = structured_data.get("resumo") or {}
+
+    ia_metadata_final = {
+        "provider": provider_used,
+        "engine_used": "openai_full_pdf_analitico",
+        "model": OPENAI_ORCAMENTO_MODEL,
+        "combined_resumo": combined_resumo,
+        "pages_meta": structured_data.get("pages_meta") or [],
+    }
+
+    try:
+        doc_id = OrcamentoFirestore.save_orcamento(
+            user_id=user_id,
+            upload_id=upload_id,
+            filename=filename,
+            tables=[],
+            items_data={
+                "items": normalized_items,
+                "hierarchical_items": hierarchical_items,
+                "resumo": combined_resumo,
+            },
+            ia_metadata=ia_metadata_final,
+        )
+    except Exception as exc:
+        logger.error("process-analitico-full: erro ao salvar no Firestore: %s", exc)
+        doc_id = upload_id
+
+    _OFFLINE_CACHE.setdefault(upload_id, {})
+    _OFFLINE_CACHE[upload_id]["itemsData"] = {
+        "items": normalized_items,
+        "hierarchical_items": hierarchical_items,
+        "resumo": combined_resumo,
+    }
+    _OFFLINE_CACHE[upload_id]["ia_metadata"] = ia_metadata_final
+    _save_extracted_cache(upload_id, _OFFLINE_CACHE[upload_id])
+
+    return {
+        "status": "success",
+        "upload_id": upload_id,
+        "document_id": doc_id,
+        "filename": filename,
+        "items_found": len(normalized_items),
+        "hierarchical_items": hierarchical_items,
+        "structured_items": hierarchical_items,
+        "items": normalized_items,
+        "resumo": combined_resumo,
+        "ia_metadata": ia_metadata_final,
+        "message": f"✅ PDF analisado integralmente — {len(hierarchical_items)} linhas hierárquicas extraídas",
     }
 
 

@@ -169,6 +169,39 @@ export const detectOrcamentoTables = async (uploadId: string) => {
   }
 };
 
+/** Processa o PDF inteiro para Orçamento Analítico (sem seleção de tabelas). */
+export const processAnaliticoFullPdf = async (uploadId: string) => {
+  try {
+    const response = await apiClient.post(
+      "/api/orcamentos/process-analitico-full",
+      { upload_id: uploadId },
+      { timeout: 900000 },
+    );
+    return response.data as {
+      status: string;
+      upload_id: string;
+      document_id: string | null;
+      filename: string;
+      items_found: number;
+      hierarchical_items: unknown[];
+      structured_items?: unknown[];
+      items: unknown[];
+      resumo: Record<string, unknown>;
+      ia_metadata?: Record<string, unknown>;
+      message: string;
+    };
+  } catch (error: any) {
+    const detail = error.response?.data?.detail;
+    const msg =
+      typeof detail === "string"
+        ? detail
+        : Array.isArray(detail)
+          ? detail.map((d: { msg?: string }) => d?.msg).join("; ")
+          : "Erro ao processar PDF completo";
+    throw new Error(msg || "Erro ao processar PDF completo");
+  }
+};
+
 /** Processa as tabelas escolhidas (GPT-4o quando configurado no backend). */
 export const processOrcamentoConfirmed = async (uploadId: string, tableIds: string | string[]) => {
   try {

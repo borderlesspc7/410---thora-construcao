@@ -14,6 +14,7 @@ import {
   Loader2,
   Download,
   CheckCircle2,
+  Layers,
 } from "lucide-react";
 import { toast } from "sonner";
 import {
@@ -214,6 +215,7 @@ export default function ValidacaoOrcamento() {
 
   // States da Planilha
   const [items, setItems] = useState<ItemOrcamento[]>([]);
+  const [hierarchicalItems, setHierarchicalItems] = useState<unknown[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [loadError, setLoadError] = useState<string>("");
   const [isExporting, setIsExporting] = useState(false);
@@ -263,6 +265,11 @@ export default function ValidacaoOrcamento() {
         | undefined;
 
       if (Array.isArray(structuredItems) && structuredItems.length > 0) {
+        const hierarchical =
+          (flowState?.hierarchicalItems as unknown[] | undefined) ??
+          (flowState?.structuredData?.hierarchicalItems as unknown[] | undefined) ??
+          structuredItems;
+        setHierarchicalItems(hierarchical);
         setItems(applyAbcToItems(mapStructuredItemsToValidation(structuredItems)));
         setIsLoading(false);
         return;
@@ -295,10 +302,20 @@ export default function ValidacaoOrcamento() {
           getOrcamentoPdf(uploadId).catch(() => null),
         ]);
 
+        const itemsData =
+          (firebaseDoc?.itemsData as Record<string, unknown> | undefined) ??
+          (backendDoc?.orcamento?.itemsData as Record<string, unknown> | undefined);
+
+        const rawHierarchical =
+          (itemsData?.hierarchical_items as unknown[]) ??
+          (backendDoc?.orcamento?.hierarchical_items as unknown[]) ??
+          [];
+
         const rawItems =
           (firebaseDoc?.items as unknown[]) ??
           (backendDoc?.orcamento?.items as unknown[]) ??
           (backendDoc?.items as unknown[]) ??
+          (itemsData?.items as unknown[]) ??
           [];
 
         if (!Array.isArray(rawItems) || rawItems.length === 0) {
@@ -309,6 +326,11 @@ export default function ValidacaoOrcamento() {
           return;
         }
 
+        setHierarchicalItems(
+          Array.isArray(rawHierarchical) && rawHierarchical.length > 0
+            ? rawHierarchical
+            : rawItems,
+        );
         setItems(applyAbcToItems(mapStoredItemsToValidation(rawItems)));
 
         if (pdfBlob) {
@@ -747,6 +769,25 @@ export default function ValidacaoOrcamento() {
           >
             <CheckCircle2 className="h-4 w-4" />
             {isSaving ? "Salvando…" : "Finalizar"}
+          </button>
+          <button
+            type="button"
+            disabled={isLoading || hierarchicalItems.length === 0}
+            className={`${btnMuted} shrink-0`}
+            onClick={() => {
+              const id = resolvedUploadId || "unknown";
+              navigate(`/orcamento-analitico/${id}`, {
+                state: {
+                  ...flowState,
+                  uploadId: id,
+                  hierarchicalItems,
+                },
+              });
+            }}
+            title="Ver orçamento na estrutura hierárquica do edital"
+          >
+            <Layers className="h-4 w-4" />
+            Orçamento Analítico
           </button>
           <button
             type="button"

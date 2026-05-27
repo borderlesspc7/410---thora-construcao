@@ -14,8 +14,10 @@ from services.openai_service import _coerce_bdi, _coerce_number
 try:
     from openpyxl import Workbook
     from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+    from openpyxl.utils import get_column_letter
 except ImportError:
     Workbook = None  # type: ignore
+    get_column_letter = None  # type: ignore
 
 DEFAULT_MODELS = {
     "analitico": False,
@@ -25,6 +27,9 @@ DEFAULT_MODELS = {
 
 HEADER_FILL = PatternFill(start_color="1F4E78", end_color="1F4E78", fill_type="solid")
 HEADER_FONT = Font(bold=True, color="FFFFFF", size=10)
+GROUP_FILL = PatternFill(start_color="D1D5DB", end_color="D1D5DB", fill_type="solid")
+GROUP_FONT = Font(bold=True, size=10)
+COMP_FONT = Font(italic=True, size=9, color="475569")
 TOTAL_FILL = PatternFill(start_color="E8F4F8", end_color="E8F4F8", fill_type="solid")
 TOTAL_FONT = Font(bold=True, size=11)
 ZEBRA_LIGHT = PatternFill(start_color="F9FAFB", end_color="F9FAFB", fill_type="solid")
@@ -61,14 +66,47 @@ def _bdi_factor(bdi_percent: float) -> float:
     return 1.0 + (bdi_percent / 100.0) if bdi_percent > 0 else 1.0
 
 
+def _resolve_tipo_linha(raw: Dict[str, Any]) -> str:
+    tipo = str(raw.get("tipo_linha") or raw.get("tipo") or "item").strip().lower()
+    if tipo in ("grupo", "titulo", "título", "title"):
+        return "grupo"
+    if tipo in ("composicao", "composição", "insumo", "subitem"):
+        return "composicao"
+    return "item"
+
+
 def _is_group_row(raw: Dict[str, Any]) -> bool:
-    tipo = str(raw.get("tipo") or "item").strip().lower()
+    tipo = _resolve_tipo_linha(raw)
     desc = str(raw.get("description") or raw.get("descricao") or "").strip().lower()
-    return tipo in ("grupo", "titulo", "título", "title") or "total do grupo" in desc
+    return tipo == "grupo" or "total do grupo" in desc
+
+
+def _is_composicao_row(raw: Dict[str, Any]) -> bool:
+    return _resolve_tipo_linha(raw) == "composicao"
 
 
 def _is_executive_row(raw: Dict[str, Any]) -> bool:
-    return not _is_group_row(raw)
+    return _resolve_tipo_linha(raw) == "item" and not _is_group_row(raw)
+
+
+def prepare_hierarchical_analitico_rows(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Preserva ordem original e inclui grupo, item e composição."""
+    rows: List[Dict[str, Any]] = []
+    for idx, raw in enumerate(items):
+        if not isinstance(raw, dict):
+            continue
+        row = _normalize_base_row(raw)
+        row["item_numero"] = str(
+            raw.get("item_numero") or raw.get("item") or raw.get("id") or ""
+        ).strip()
+        row["rotulo_linha"] = str(raw.get("rotulo_linha") or "").strip()
+        row["tipo_categoria"] = str(raw.get("tipo_categoria") or "").strip()
+        row["porcentagem"] = _coerce_number(raw.get("porcentagem") or raw.get("percentual"))
+        row["tipo_linha"] = _resolve_tipo_linha(raw)
+        row["banco"] = str(raw.get("banco") or "").strip()
+        row["_order"] = idx
+        rows.append(row)
+    return rows
 
 
 def _line_total_com_bdi(raw: Dict[str, Any]) -> float:
@@ -232,58 +270,156 @@ def _apply_col_widths(ws, widths: Dict[str, float]) -> None:
         ws.column_dimensions[col_letter].width = width
 
 
-def _fill_analitico_sheet(ws, rows: List[Dict[str, Any]]) -> None:
-    headers = [
-        "Código",
-        "Descrição",
-        "Unidade",
-        "Quantidade",
-        "Valor Unitário C/BDI",
-        "BDI (%)",
-        "Valor Total C/BDI",
-    ]
-    _write_header_row(ws, headers)
-    right_cols = {4, 5, 6, 7}
+def _write_novacap_metadata_header(
+    ws,
+    *,
+    nome_obra: str | None = None,
+    bancos_referencia: str | None = None,
+    bdi_percent: float | None = None,
+    encargos_sociais: str | None = None,
+) -> int:
+    """Cabeçalho estilo NOVACAP (linhas 1-3). Retorna linha inicial dos dados."""
+    ws.cell(row=1, column=4).value = "Obra"
+    ws.cell(row=1, column=5).value = "Bancos"
+    ws.cell(row=1, column=7).value = "B.D.I."
+    ws.cell(row=1, column=9).value = "Encargos Sociais"
+    for col in (4, 5, 7, 9):
+        cell = ws.cell(row=1, column=col)
+        cell.font = Font(bold=True, size=10)
+
+    ws.cell(row=2, column=4).value = nome_obra or "—"
+    ws.cell(row=2, column=5).value = bancos_referencia or "SINAPI / SICRO"
+    ws.cell(row=2, column=7).value = (
+        f"{bdi_percent:.2f}%".replace(".", ",") if bdi_percent is not None else "—"
+    )
+    ws.cell(row=2, column=9).value = encargos_sociais or "—"
+    for col in (4, 5, 7, 9):
+        ws.cell(row=2, column=col).alignment = Alignment(wrap_text=True, vertical="top")
+
+    title_cell = ws.cell(row=3, column=1)
+    title_cell.value = "Planilha Orçamentária Analítica"
+    title_cell.font = Font(bold=True, size=12)
+    return 4
+
+
+def gerar_aba_analitica(
+    ws,
+    rows: List[Dict[str, Any]],
+    *,
+    nome_obra: str | None = None,
+    bancos_referencia: str | None = None,
+    bdi_percent: float | None = None,
+    encargos_sociais: str | None = None,
+) -> None:
+    """
+    Preenche aba no formato NOVACAP (referência Drenagem Ceilândia Norte).
+    Colunas: A=Item/Rótulo | B=Código | C=Banco | D=Descrição | E=Tipo | G=Und | H=Quant | I=Porcent | J=Valor Unit | K=Total
+    """
+    if not bancos_referencia:
+        bancos = sorted(
+            {
+                str(r.get("banco") or "").strip()
+                for r in rows
+                if str(r.get("banco") or "").strip()
+            }
+        )
+        bancos_referencia = "\n".join(bancos) if bancos else "SINAPI / SICRO"
+
+    if bdi_percent is None:
+        bdi_values = [float(r.get("bdi") or 0) for r in rows if float(r.get("bdi") or 0) > 0]
+        bdi_percent = sum(bdi_values) / len(bdi_values) if bdi_values else None
+
+    data_start = _write_novacap_metadata_header(
+        ws,
+        nome_obra=nome_obra,
+        bancos_referencia=bancos_referencia,
+        bdi_percent=bdi_percent,
+        encargos_sociais=encargos_sociais,
+    )
+
     total_geral = 0.0
 
     for idx, row_data in enumerate(rows):
-        row_num = idx + 2
-        stripe = ZEBRA_LIGHT if idx % 2 == 0 else ZEBRA_WHITE
-        values = [
-            row_data["code"],
-            row_data["description"],
-            row_data["unit"],
-            row_data["qty"],
-            row_data["unit_com_bdi"],
-            row_data["bdi"],
-            row_data["total_com_bdi"],
-        ]
-        formats = [None, None, None, "#,##0.0000", "#,##0.000", '0.00"%"', "#,##0.00"]
-        for col_num, value in enumerate(values, 1):
+        row_num = data_start + idx
+        tipo = row_data.get("tipo_linha") or "item"
+        is_grupo = tipo == "grupo"
+        is_comp = tipo == "composicao"
+
+        item_num = row_data.get("item_numero") or ""
+        rotulo = row_data.get("rotulo_linha") or ""
+        col_a = f" {item_num} " if item_num else rotulo
+        codigo = row_data.get("code") or ""
+        banco = row_data.get("banco") or ""
+        descricao = row_data.get("description") or ""
+        tipo_cat = row_data.get("tipo_categoria") or ""
+        unidade = row_data.get("unit") or ""
+        qty = row_data.get("qty") or 0
+        pct = row_data.get("porcentagem") or 0
+        unit_val = row_data.get("unit_com_bdi") or row_data.get("valor_unitario") or 0
+
+        row_fill = GROUP_FILL if is_grupo else (ZEBRA_LIGHT if idx % 2 == 0 else ZEBRA_WHITE)
+
+        values = {
+            1: col_a,
+            2: codigo if not is_grupo else None,
+            3: banco if not is_grupo else None,
+            4: descricao,
+            5: tipo_cat if not is_grupo else None,
+            7: unidade if not is_grupo else None,
+            8: qty if not is_grupo and qty else None,
+            9: pct if not is_grupo and pct else None,
+            10: unit_val if not is_grupo and unit_val else None,
+            11: None,
+        }
+
+        for col_num, value in values.items():
             cell = ws.cell(row=row_num, column=col_num)
-            cell.value = value
             cell.border = THIN_BORDER
-            cell.fill = stripe
-            if formats[col_num - 1]:
-                cell.number_format = formats[col_num - 1]
-            align = "right" if col_num in right_cols else "left"
-            cell.alignment = Alignment(horizontal=align, vertical="center")
-        total_geral += row_data["total_com_bdi"]
+            cell.fill = row_fill
 
-    total_row = len(rows) + 3
-    ws.cell(row=total_row, column=6).value = "TOTAL GERAL:"
-    ws.cell(row=total_row, column=6).font = TOTAL_FONT
-    ws.cell(row=total_row, column=6).alignment = Alignment(horizontal="right")
-    ws.cell(row=total_row, column=7).value = total_geral
-    ws.cell(row=total_row, column=7).number_format = "#,##0.00"
-    ws.cell(row=total_row, column=7).fill = TOTAL_FILL
-    ws.cell(row=total_row, column=7).font = TOTAL_FONT
-    ws.cell(row=total_row, column=7).border = THIN_BORDER
+            if col_num == 11 and not is_grupo and qty and unit_val:
+                qty_col = get_column_letter(8)
+                unit_col = get_column_letter(10)
+                cell.value = f"={qty_col}{row_num}*{unit_col}{row_num}"
+                cell.number_format = "#,##0.00"
+                total_geral += float(qty) * float(unit_val)
+            elif col_num == 11 and is_grupo:
+                static_total = row_data.get("total_com_bdi") or 0
+                if static_total:
+                    cell.value = static_total
+                    cell.number_format = "#,##0.00"
+            elif col_num == 11 and value is not None:
+                cell.value = value
+                cell.number_format = "#,##0.00"
+            else:
+                cell.value = value
+                if col_num == 8:
+                    cell.number_format = "#,##0.0000"
+                elif col_num in (9, 10):
+                    cell.number_format = "#,##0.00"
 
+            if is_grupo:
+                cell.font = GROUP_FONT
+            elif is_comp and col_num == 4:
+                cell.font = COMP_FONT
+                cell.alignment = Alignment(horizontal="left", vertical="center", indent=1)
+            elif col_num in (8, 9, 10, 11):
+                cell.alignment = Alignment(horizontal="right", vertical="center")
+            else:
+                cell.alignment = Alignment(horizontal="left", vertical="center", wrap_text=col_num == 4)
+
+        if not is_grupo and tipo == "item":
+            total_geral += float(row_data.get("total_com_bdi") or 0)
+
+    ws.freeze_panes = f"A{data_start}"
     _apply_col_widths(
         ws,
-        {"A": 14, "B": 52, "C": 10, "D": 14, "E": 18, "F": 10, "G": 18},
+        {"A": 14, "B": 14, "C": 12, "D": 48, "E": 22, "G": 8, "H": 12, "I": 10, "J": 14, "K": 16},
     )
+
+
+def _fill_analitico_sheet(ws, rows: List[Dict[str, Any]]) -> None:
+    gerar_aba_analitica(ws, rows)
 
 
 def _fill_curva_abc_sheet(ws, rows: List[Dict[str, Any]], total_geral: float) -> None:
@@ -418,6 +554,8 @@ def _fill_sintetico_sheet(ws, rows: List[Dict[str, Any]]) -> None:
 def build_export_workbook(
     items: List[Dict[str, Any]],
     modelos_selecionados: Dict[str, bool] | None,
+    *,
+    nome_projeto: str | None = None,
 ) -> Tuple[Any, List[str]]:
     if not Workbook:
         raise RuntimeError("openpyxl não está instalado")
@@ -431,10 +569,10 @@ def build_export_workbook(
     sheets_created: List[str] = []
 
     if models.get("analitico"):
-        analitico_rows = prepare_analitico_rows(items)
+        analitico_rows = prepare_hierarchical_analitico_rows(items)
         if analitico_rows:
             ws = wb.create_sheet("Orçamento Analítico")
-            _fill_analitico_sheet(ws, analitico_rows)
+            gerar_aba_analitica(ws, analitico_rows, nome_obra=nome_projeto)
             sheets_created.append("Orçamento Analítico")
 
     if models.get("curva_abc"):
@@ -465,7 +603,7 @@ def save_export_workbook(
     temp_folder: Path,
     nome_projeto: str | None = None,
 ) -> Tuple[Path, str]:
-    wb, _ = build_export_workbook(items, modelos_selecionados)
+    wb, _ = build_export_workbook(items, modelos_selecionados, nome_projeto=nome_projeto)
     stem = "orcamento"
     if nome_projeto and nome_projeto.strip():
         safe = re.sub(r"[^\w\s-]", "", nome_projeto.strip(), flags=re.UNICODE)

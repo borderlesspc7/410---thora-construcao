@@ -8,6 +8,7 @@ import {
   X,
   LogOut,
   Upload,
+  Layers,
 } from "lucide-react";
 import { signOutCurrentUser } from "../features/auth/authService";
 
@@ -34,6 +35,9 @@ const SidebarLayout: React.FC<SidebarLayoutProps> = ({ children }) => {
         location.pathname.startsWith("/curva-abc")
       );
     }
+    if (path === "/orcamento-analitico") {
+      return location.pathname.startsWith("/orcamento-analitico");
+    }
     return (
       location.pathname === path || location.pathname.startsWith(`${path}/`)
     );
@@ -42,6 +46,7 @@ const SidebarLayout: React.FC<SidebarLayoutProps> = ({ children }) => {
   const menuItems = [
     { path: "/", label: "Dashboard", icon: Home },
     { path: "/orcamento", label: "Curva ABC", icon: Upload },
+    { path: "/orcamento-analitico", label: "Orçamento Analítico", icon: Layers },
     { path: "/relatorios", label: "Relatórios", icon: BarChart3 },
   ];
 

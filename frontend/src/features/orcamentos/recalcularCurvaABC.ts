@@ -22,10 +22,21 @@ export interface OrcamentoItem {
   accumulated_percentage?: number;
 }
 
+export function resolveTipoLinha(item: { tipo?: string; tipo_linha?: string }): "grupo" | "item" | "composicao" {
+  const tipo = String(item.tipo_linha ?? item.tipo ?? "item").toLowerCase();
+  if (tipo === "grupo" || tipo === "titulo" || tipo === "título" || tipo === "title") {
+    return "grupo";
+  }
+  if (tipo === "composicao" || tipo === "composição" || tipo === "insumo" || tipo === "subitem") {
+    return "composicao";
+  }
+  return "item";
+}
+
 export function isExecutiveItem(item: OrcamentoItem): boolean {
-  const tipo = String(item.tipo ?? "item").toLowerCase();
+  const tipo = resolveTipoLinha(item);
   const desc = item.description.toLowerCase();
-  return tipo !== "grupo" && !desc.includes("total do grupo");
+  return tipo === "item" && !desc.includes("total do grupo");
 }
 
 /** Converte valor vindo de input (pt-BR ou en-US) para float. */
