@@ -59,6 +59,7 @@ from services.openai_service import (
     _coerce_number,
 )
 from services.analitico_job import (
+    clear_job,
     complete_job,
     fail_job,
     get_job,
@@ -2103,7 +2104,18 @@ async def _run_analitico_full_job(
     user_id: str,
     filename: str,
     pdf_bytes: bytes,
+    *,
+    force_reprocess: bool = False,
 ) -> None:
+    if force_reprocess:
+        _OFFLINE_CACHE.pop(upload_id, None)
+        cache_path = _cache_path_for_upload_id(upload_id)
+        if cache_path.exists():
+            try:
+                cache_path.unlink()
+            except OSError as exc:
+                logger.warning("Não foi possível limpar cache %s: %s", upload_id, exc)
+
     try:
         structured_data, provider_used = await process_full_pdf_analitico(
             pdf_bytes,
@@ -2119,6 +2131,11 @@ async def _run_analitico_full_job(
         )
         complete_job(upload_id, result)
     except OpenAIServiceError as exc:
+        logger.error(
+            "process-analitico-full job %s — OpenAI/validação: %s",
+            upload_id,
+            exc,
+        )
         fail_job(upload_id, str(exc))
     except Exception as exc:
         logger.exception("process-analitico-full job %s", upload_id)
@@ -2163,10 +2180,19 @@ async def process_analitico_full_pdf(
             "message": existing.get("message") or "Análise em andamento…",
         }
 
+    clear_job(upload_id)
     init_job(upload_id)
     filename = str(meta.get("filename") or file_path.name)
     pdf_bytes = file_path.read_bytes()
-    asyncio.create_task(_run_analitico_full_job(upload_id, user_id, filename, pdf_bytes))
+    asyncio.create_task(
+        _run_analitico_full_job(
+            upload_id,
+            user_id,
+            filename,
+            pdf_bytes,
+            force_reprocess=payload.force_reprocess,
+        )
+    )
 
     return {
         "status": "processing",
@@ -2204,11 +2230,17 @@ async def process_analitico_full_status(
                 "result": job["result"],
             }
         if job.get("status") == "failed":
+            err_msg = job.get("error") or job.get("message") or "Erro desconhecido"
+            logger.warning(
+                "process-analitico-full status failed upload_id=%s: %s",
+                upload_id,
+                err_msg,
+            )
             return {
                 "status": "failed",
                 "upload_id": upload_id,
-                "error": job.get("error") or "Erro desconhecido",
-                "message": job.get("message"),
+                "error": err_msg,
+                "message": job.get("message") or err_msg,
             }
         return {
             "status": "processing",

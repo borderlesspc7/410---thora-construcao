@@ -24,6 +24,11 @@ import {
   mapRawListToLinhasAnaliticas,
   type LinhaAnalitica,
 } from "../features/orcamentos/orcamentoAnalitico";
+import {
+  aplicarEdicaoAnalitica,
+  recalcularGruposAnalitico,
+  type AnaliticoEditableField,
+} from "../features/orcamentos/recalcularAnaliticoHierarquico";
 import type { NovoOrcamentoFlowState } from "../features/orcamentos/outputModels";
 import { ANALITICO_ONLY } from "../features/orcamentos/outputModels";
 import { btnAccent, btnMuted } from "../components/ui/buttonClasses";
@@ -33,6 +38,9 @@ const formatMoney = (value: number) =>
 
 const formatQty = (value: number) =>
   value.toLocaleString("pt-BR", { minimumFractionDigits: 4, maximumFractionDigits: 4 });
+
+const EDITABLE_NUMERIC_CLASS =
+  "w-full min-w-[5rem] rounded border border-slate-200 bg-white px-2 py-1 text-right text-sm tabular-nums focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500";
 
 function rowClassName(tipo: LinhaAnalitica["tipoLinha"]): string {
   if (tipo === "grupo") return "bg-slate-700 text-white font-bold";
@@ -59,7 +67,7 @@ const OrcamentoAnalitico: React.FC = () => {
 
   const applyHierarchicalData = useCallback(
     (rawItems: unknown[], uploadId?: string, filename?: string) => {
-      const mapped = mapRawListToLinhasAnaliticas(rawItems);
+      const mapped = recalcularGruposAnalitico(mapRawListToLinhasAnaliticas(rawItems));
       if (mapped.length === 0) return false;
       setLinhas(mapped);
       setViewMode("results");
@@ -179,6 +187,13 @@ const OrcamentoAnalitico: React.FC = () => {
 
   const resumo = useMemo(() => calcularResumoAnalitico(linhas), [linhas]);
 
+  const handleAnaliticoEdit = useCallback(
+    (index: number, field: AnaliticoEditableField, value: string) => {
+      setLinhas((prev) => aplicarEdicaoAnalitica(prev, index, field, value));
+    },
+    [],
+  );
+
   const handleExport = async () => {
     if (linhas.length === 0) {
       toast.warning("Nada para exportar");
@@ -217,7 +232,7 @@ const OrcamentoAnalitico: React.FC = () => {
           mode="full_pdf"
           steps={ORCAMENTO_ANALITICO_WIZARD_STEPS}
           title="Orçamento Analítico"
-          subtitle={`Passo 1 de ${ORCAMENTO_ANALITICO_WIZARD_STEPS.length} — envie o PDF ou edital completo; a IA lê todo o documento e monta a planilha hierárquica NOVACAP.`}
+          subtitle={`Passo 1 de ${ORCAMENTO_ANALITICO_WIZARD_STEPS.length} — envie o PDF ou edital completo; a IA extrai itens de planilhas e de trechos em texto (quantidades, valores, serviços).`}
           processingLabel="Passo 2 — IA analisando todo o conteúdo do PDF (grupos, itens e composições)…"
           logTag="Orçamento Analítico"
           onComplete={handleWizardComplete}
@@ -317,13 +332,17 @@ const OrcamentoAnalitico: React.FC = () => {
                   <th className="px-3 py-3 text-left font-semibold">Tipo</th>
                   <th className="px-3 py-3 text-center font-semibold">Und</th>
                   <th className="px-3 py-3 text-right font-semibold">Quant.</th>
+                  <th className="px-3 py-3 text-right font-semibold">BDI (%)</th>
                   <th className="px-3 py-3 text-right font-semibold">Porcent.</th>
                   <th className="px-3 py-3 text-right font-semibold">Valor Unit.</th>
                   <th className="px-3 py-3 text-right font-semibold">Total</th>
                 </tr>
               </thead>
               <tbody>
-                {linhas.map((linha) => (
+                {linhas.map((linha, index) => {
+                  const isEditable =
+                    linha.tipoLinha === "item" || linha.tipoLinha === "composicao";
+                  return (
                   <tr
                     key={linha.id}
                     className={`border-b border-slate-100 ${rowClassName(linha.tipoLinha)}`}
@@ -347,11 +366,34 @@ const OrcamentoAnalitico: React.FC = () => {
                       {linha.tipoLinha === "grupo" ? "" : linha.unidade}
                     </td>
                     <td className="px-3 py-2 text-right tabular-nums">
-                      {linha.tipoLinha === "grupo"
-                        ? ""
-                        : linha.quantidade > 0
-                          ? formatQty(linha.quantidade)
-                          : ""}
+                      {isEditable ? (
+                        <input
+                          type="number"
+                          step="0.0001"
+                          min={0}
+                          inputMode="decimal"
+                          value={linha.quantidade || ""}
+                          onChange={(e) =>
+                            handleAnaliticoEdit(index, "quantidade", e.target.value)
+                          }
+                          className={EDITABLE_NUMERIC_CLASS}
+                          aria-label={`Quantidade — ${linha.descricao}`}
+                        />
+                      ) : null}
+                    </td>
+                    <td className="px-3 py-2 text-right tabular-nums">
+                      {isEditable ? (
+                        <input
+                          type="number"
+                          step="0.01"
+                          min={0}
+                          inputMode="decimal"
+                          value={linha.bdi || ""}
+                          onChange={(e) => handleAnaliticoEdit(index, "bdi", e.target.value)}
+                          className={EDITABLE_NUMERIC_CLASS}
+                          aria-label={`BDI — ${linha.descricao}`}
+                        />
+                      ) : null}
                     </td>
                     <td className="px-3 py-2 text-right tabular-nums">
                       {linha.tipoLinha === "grupo" || linha.porcentagem <= 0
@@ -359,21 +401,31 @@ const OrcamentoAnalitico: React.FC = () => {
                         : `${linha.porcentagem.toFixed(2)}%`}
                     </td>
                     <td className="px-3 py-2 text-right tabular-nums">
-                      {linha.tipoLinha === "grupo"
-                        ? ""
-                        : linha.valorUnitario > 0
-                          ? formatMoney(linha.valorUnitario)
-                          : ""}
+                      {isEditable ? (
+                        <input
+                          type="number"
+                          step="0.01"
+                          min={0}
+                          inputMode="decimal"
+                          value={linha.valorUnitario || ""}
+                          onChange={(e) =>
+                            handleAnaliticoEdit(index, "valorUnitario", e.target.value)
+                          }
+                          className={EDITABLE_NUMERIC_CLASS}
+                          aria-label={`Valor unitário — ${linha.descricao}`}
+                        />
+                      ) : null}
                     </td>
                     <td className="px-3 py-2 text-right tabular-nums font-medium">
                       {linha.valorTotal > 0 ? formatMoney(linha.valorTotal) : ""}
                     </td>
                   </tr>
-                ))}
+                  );
+                })}
               </tbody>
               <tfoot>
                 <tr className="bg-slate-100 font-bold">
-                  <td colSpan={9} className="px-3 py-3 text-right text-slate-700">
+                  <td colSpan={10} className="px-3 py-3 text-right text-slate-700">
                     TOTAL GERAL (itens):
                   </td>
                   <td className="px-3 py-3 text-right tabular-nums text-slate-900">

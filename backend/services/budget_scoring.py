@@ -25,19 +25,33 @@ _BUDGET_PAGE_KEYWORDS = (
     "planilha analitica",
     "planilha orçamentária",
     "planilha orcamentaria",
+    "planilha de custos",
+    "memorial descritivo",
+    "quadro de preços",
+    "quadro de quantidades",
     "valor unit",
+    "valor unitário",
+    "valor unitario",
     "preço unit",
     "preco unit",
     "preço total",
     "preco total",
+    "valor global",
+    "custo unit",
     "quant.",
+    "quantidade",
     "qtde",
     "qtd ",
     "b.d.i",
     "bdi",
     " und ",
+    "unidade",
     "m²",
     "m3",
+    "r$",
+    "reais",
+    "serviço",
+    "servico",
 )
 
 _STRONG_BUDGET_KEYWORDS = (
@@ -98,6 +112,16 @@ _SERVICE_CODE_PATTERN = re.compile(
 )
 
 _NUMERIC_CELL_PATTERN = re.compile(r"\d{1,3}(?:\.\d{3})*,\d{2}|\d+,\d{2}")
+_CURRENCY_PATTERN = re.compile(
+    r"R\$\s*\d{1,3}(?:\.\d{3})*(?:,\d{2})?|\d{1,3}(?:\.\d{3})*,\d{2}\s*(?:reais)?",
+    re.IGNORECASE,
+)
+_QUANTITY_WORD_PATTERN = re.compile(
+    r"\b(qtde|quantidade|qtd|quant\.?|q\.\s*total)\b",
+    re.IGNORECASE,
+)
+_ITEM_NUMBER_PATTERN = re.compile(r"\b\d{1,2}(?:\.\d{1,4}){1,3}\b")
+_UNIT_PATTERN = re.compile(r"\b(un|und|m²|m2|m³|m3|kg|t|hh|h|l|km)\b", re.IGNORECASE)
 
 
 def _coerce_number(value: Any) -> float:
@@ -185,9 +209,57 @@ def _edital_noise_score(text: str) -> int:
 
 
 def _text_has_budget_numeric_pattern(text: str) -> bool:
-    return len(_NUMERIC_CELL_PATTERN.findall(text)) >= 3 or len(
-        _SERVICE_CODE_PATTERN.findall(text)
-    ) >= 2
+    currencies = len(_CURRENCY_PATTERN.findall(text)) + len(_NUMERIC_CELL_PATTERN.findall(text))
+    return (
+        currencies >= 2
+        or len(_SERVICE_CODE_PATTERN.findall(text)) >= 2
+        or (
+            currencies >= 1
+            and len(_QUANTITY_WORD_PATTERN.findall(text)) >= 1
+            and len(_UNIT_PATTERN.findall(text)) >= 1
+        )
+    )
+
+
+def score_text_budget_likelihood(text: str) -> int:
+    """
+    Pontua páginas com orçamento em texto corrido (edital, memorial, quadros descritivos).
+    Independente de tabelas pdfplumber.
+    """
+    if not text.strip():
+        return 0
+
+    lowered = text.lower()
+    score = 0
+    currencies = len(_CURRENCY_PATTERN.findall(text)) + len(_NUMERIC_CELL_PATTERN.findall(text))
+    quantities = len(_QUANTITY_WORD_PATTERN.findall(text))
+    codes = len(_SERVICE_CODE_PATTERN.findall(text))
+    item_nums = len(_ITEM_NUMBER_PATTERN.findall(text))
+    units = len(_UNIT_PATTERN.findall(text))
+
+    score += min(currencies * 4, 36)
+    score += min(quantities * 5, 25)
+    score += min(codes * 4, 28)
+    score += min(item_nums * 2, 16)
+    score += min(units * 2, 12)
+
+    kw_general, kw_strong = _keyword_score(text)
+    score += kw_strong * 4 + min(kw_general, 6)
+
+    if "valor unit" in lowered or "preço unit" in lowered or "preco unit" in lowered:
+        score += 12
+    if "orçamento" in lowered or "orcamento" in lowered:
+        score += 8
+    if "composição" in lowered or "composicao" in lowered:
+        score += 6
+
+    edital_noise = _edital_noise_score(text)
+    if edital_noise >= 6 and currencies < 2 and quantities == 0:
+        score -= 30
+    elif edital_noise >= 4 and currencies < 1:
+        score -= 12
+
+    return score
 
 
 @dataclass(frozen=True)
@@ -196,20 +268,22 @@ class BudgetPageCandidate:
     image_detail: str  # "high" | "low" | "text"
     table_score: int
     keyword_score: int
+    text_score: int = 0
 
 
 def detect_budget_pages(
     pdf_content: bytes,
     *,
     max_pages: int = 60,
-    min_table_score: int = 12,
-    min_strong_keywords: int = 2,
+    min_table_score: int = 10,
+    min_text_score: int = 4,
+    min_strong_keywords: int = 1,
 ) -> List[BudgetPageCandidate]:
     """
-    Retorna páginas candidatas com nível de detalhe da visão para a IA.
-    Páginas fracas (só edital com palavras genéricas) são excluídas.
+    Retorna páginas candidatas (tabelas E texto corrido com valores/quantidades).
     """
     candidates: list[tuple[int, BudgetPageCandidate]] = []
+    seen_pages: set[int] = set()
 
     with pdfplumber.open(BytesIO(pdf_content)) as pdf:
         total = min(len(pdf.pages), max_pages)
@@ -221,8 +295,9 @@ def detect_budget_pages(
                 continue
 
             kw_general, kw_strong = _keyword_score(text)
-            edital_noise = _edital_noise_score(text)
+            text_score = score_text_budget_likelihood(text)
             has_numeric = _text_has_budget_numeric_pattern(text)
+            quantities = len(_QUANTITY_WORD_PATTERN.findall(text))
 
             tables = page.extract_tables() or []
             table_scores = [
@@ -232,25 +307,41 @@ def detect_budget_pages(
             ]
             best_table = max(table_scores) if table_scores else 0
 
+            has_digits = bool(re.search(r"\d", text))
+            is_table_page = best_table >= min_table_score
+            is_text_budget_page = text_score >= min_text_score and (
+                has_numeric or (has_digits and len(text) > 120)
+            )
+            is_mixed_signal = (
+                text_score >= 4
+                and has_digits
+                and (kw_general >= 1 or has_numeric)
+            )
+            is_loose_edital_page = (
+                has_digits
+                and len(text) > 80
+                and (has_numeric or "r$" in text.lower() or quantities >= 1)
+            )
+
+            if not (
+                is_table_page
+                or is_text_budget_page
+                or is_mixed_signal
+                or is_loose_edital_page
+            ):
+                continue
+
             if best_table >= 18:
                 detail = "high"
-            elif best_table >= min_table_score or (
-                kw_strong >= min_strong_keywords and has_numeric
-            ):
-                detail = "low"
-            elif kw_strong >= 3 and has_numeric and edital_noise <= 2:
-                detail = "low"
+            elif is_text_budget_page and best_table < min_table_score:
+                detail = "high"
+            elif best_table >= min_table_score or text_score >= 12:
+                detail = "high" if text_score >= 14 or best_table >= 16 else "low"
             else:
-                continue
+                detail = "low"
 
-            if edital_noise >= 4 and best_table < 15 and kw_strong < 2:
-                continue
-            if kw_general < 2 and best_table < min_table_score:
-                continue
-            if edital_noise >= 3 and best_table < 10 and kw_strong == 0:
-                continue
-
-            priority = best_table * 10 + kw_strong * 5 + kw_general
+            priority = best_table * 10 + text_score * 3 + kw_strong * 5
+            seen_pages.add(page_num)
             candidates.append(
                 (
                     priority,
@@ -259,6 +350,7 @@ def detect_budget_pages(
                         image_detail=detail,
                         table_score=best_table,
                         keyword_score=kw_general,
+                        text_score=text_score,
                     ),
                 )
             )
@@ -267,30 +359,77 @@ def detect_budget_pages(
         candidates.sort(key=lambda item: item[1].page_number)
         return [item[1] for item in candidates]
 
-    # Fallback conservador: páginas com tabela scoreável ou padrão numérico forte
     fallback: list[BudgetPageCandidate] = []
     with pdfplumber.open(BytesIO(pdf_content)) as pdf:
         total = min(len(pdf.pages), max_pages)
         for idx in range(total):
             page_num = idx + 1
+            if page_num in seen_pages:
+                continue
             page = pdf.pages[idx]
             text = page.extract_text() or ""
             if not text.strip():
+                continue
+            text_score = score_text_budget_likelihood(text)
+            if text_score < 5 and not _text_has_budget_numeric_pattern(text):
                 continue
             tables = page.extract_tables() or []
             best_table = max(
                 (score_budget_table_likelihood(t) for t in tables if t),
                 default=0,
             )
-            if best_table >= 8 or (
-                _text_has_budget_numeric_pattern(text) and _keyword_score(text)[0] >= 1
-            ):
-                fallback.append(
-                    BudgetPageCandidate(
-                        page_number=page_num,
-                        image_detail="low" if best_table < 18 else "high",
-                        table_score=best_table,
-                        keyword_score=_keyword_score(text)[0],
-                    )
+            fallback.append(
+                BudgetPageCandidate(
+                    page_number=page_num,
+                    image_detail="high" if text_score >= 10 or best_table >= 14 else "low",
+                    table_score=best_table,
+                    keyword_score=_keyword_score(text)[0],
+                    text_score=text_score,
                 )
+            )
     return fallback
+
+
+def detect_readable_pages_for_rescan(
+    pdf_content: bytes,
+    *,
+    max_pages: int = 60,
+    min_text_len: int = 40,
+) -> List[BudgetPageCandidate]:
+    """
+    Fallback: páginas com texto legível e algum dígito (varredura ampla).
+    """
+    pages: List[BudgetPageCandidate] = []
+    with pdfplumber.open(BytesIO(pdf_content)) as pdf:
+        total = min(len(pdf.pages), max_pages)
+        for idx in range(total):
+            page_num = idx + 1
+            text = (pdf.pages[idx].extract_text() or "").strip()
+            if len(text) < min_text_len:
+                continue
+            if not re.search(r"\d", text):
+                continue
+            text_score = score_text_budget_likelihood(text)
+            pages.append(
+                BudgetPageCandidate(
+                    page_number=page_num,
+                    image_detail="high",
+                    table_score=0,
+                    keyword_score=_keyword_score(text)[0],
+                    text_score=text_score,
+                )
+            )
+    return pages
+
+
+def merge_page_candidates(
+    primary: List[BudgetPageCandidate],
+    extra: List[BudgetPageCandidate],
+) -> List[BudgetPageCandidate]:
+    """Une listas sem duplicar número de página (mantém a de maior text_score)."""
+    by_page: dict[int, BudgetPageCandidate] = {}
+    for candidate in primary + extra:
+        existing = by_page.get(candidate.page_number)
+        if existing is None or candidate.text_score > existing.text_score:
+            by_page[candidate.page_number] = candidate
+    return [by_page[p] for p in sorted(by_page)]

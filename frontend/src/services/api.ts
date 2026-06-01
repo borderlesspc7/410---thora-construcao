@@ -206,6 +206,18 @@ const parseApiError = (error: unknown, fallback: string): string => {
   return fallback;
 };
 
+/** Erros HTTP do axios; demais Error (ex.: falha do job) preservam a mensagem original. */
+function rethrowAnaliticoProcessError(error: unknown, fallback: string): never {
+  const err = error as { response?: unknown; message?: string };
+  if (err.response) {
+    throw new Error(parseApiError(error, fallback));
+  }
+  if (error instanceof Error && error.message.trim()) {
+    throw error;
+  }
+  throw new Error(fallback);
+}
+
 /** Processa o PDF inteiro para Orçamento Analítico (assíncrono + polling de progresso). */
 export const processAnaliticoFullPdf = async (
   uploadId: string,
@@ -264,7 +276,12 @@ export const processAnaliticoFullPdf = async (
         continue;
       }
 
-      if (statusData.status === "completed" && statusData.result) {
+      if (statusData.status === "completed") {
+        if (!statusData.result) {
+          throw new Error(
+            "Análise concluída sem dados. Tente reenviar o PDF ou use force_reprocess.",
+          );
+        }
         options?.onProgress?.({
           ...statusData,
           pages_done: statusData.pages_total || statusData.pages_done,
@@ -274,11 +291,16 @@ export const processAnaliticoFullPdf = async (
       }
 
       if (statusData.status === "failed") {
-        throw new Error(statusData.error || "Erro ao processar PDF completo");
+        const detail =
+          statusData.error ||
+          statusData.message ||
+          "Erro ao processar PDF completo";
+        console.error("[Orçamento Analítico] Job falhou:", detail, statusData);
+        throw new Error(detail);
       }
     }
   } catch (error: unknown) {
-    throw new Error(parseApiError(error, "Erro ao processar PDF completo"));
+    rethrowAnaliticoProcessError(error, "Erro ao processar PDF completo");
   }
 };
 

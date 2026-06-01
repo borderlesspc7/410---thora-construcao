@@ -26,7 +26,11 @@ from config import (
 )
 
 from .ai_audit_logger import log_ai_exchange, truncate_rows_for_audit
-from .budget_scoring import BudgetPageCandidate, detect_budget_pages
+from .budget_scoring import (
+    BudgetPageCandidate,
+    detect_budget_pages,
+    detect_readable_pages_for_rescan,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -108,23 +112,49 @@ EXTRACTION_USER_PROMPT_HEADER = (
     "Extraia a tabela selecionada seguindo rigorosamente as regras do sistema, em especial o MAPEAMENTO ESPACIAL e o SANITY CHECK (Qtd * VU = Total)."
 )
 
-FULL_PDF_ANALITICO_SYSTEM_PROMPT = (
-    EXTRACTION_SYSTEM_PROMPT
-    + "\n\nMODO DOCUMENTO COMPLETO (Orçamento Analítico NOVACAP):\n"
-    "Analise TODA a página do PDF — não apenas tabelas delimitadas. "
-    "Capture planilhas orçamentárias mesmo quando o layout for textual, multi-coluna ou anexo de edital.\n"
-    "Campos adicionais:\n"
-    "- rotulo_linha: rótulo da linha na coluna A quando aplicável (ex: 'Composição', 'Composição Auxiliar', 'Insumo'); null se usar item_numero.\n"
-    "- tipo_categoria: classificação do item (ex: 'Material', 'Paisagismo - Plantio', 'Mão de Obra'); null se ausente.\n"
-    "- porcentagem: percentual da coluna 'Porcent.' quando existir; 0.0 se ausente.\n"
-    "Preserve a ordem exata de leitura (topo→baixo) dentro de cada página."
+ANALITICO_FULL_SYSTEM_PROMPT = (
+    "Você é especialista em orçamentos de obras públicas (NOVACAP / licitações). "
+    "Extraia dados de QUALQUER formato presente na página:\n"
+    "• planilhas e tabelas;\n"
+    "• texto corrido, cláusulas, memorial descritivo, listas numeradas;\n"
+    "• imagens, quadros escaneados, carimbos e anexos visuais.\n\n"
+    "REGRA PRINCIPAL: NÃO exija tabela. Se houver serviço/obrigação com quantidade, unidade e/ou "
+    "valor (R$, preço unitário, total, qtde), crie uma linha em orcamento_itens.\n\n"
+    "tipo_linha: 'grupo' (títulos de capítulo), 'item' (serviços), 'composicao' (insumos/subitens).\n"
+    "codigo: código do serviço quando existir; use \"\" (string vazia) se não houver.\n"
+    "descricao: obrigatória para itens/composições (resumo do serviço).\n"
+    "banco: SINAPI, SICRO, etc. ou null.\n"
+    "bdi, quantidade, valor_unitario, valor_total: números em padrão brasileiro convertidos para float.\n"
+    "Se só houver valor total, preencha valor_total e estime quantidade=1 se necessário.\n"
+    "rotulo_linha, tipo_categoria, porcentagem: quando existirem; senão null ou 0.0.\n"
+    "item_numero: numeração hierárquica (1, 1.1, 1.1.1) ou null.\n\n"
+    "Ignore apenas: cabeçalhos repetidos de coluna, páginas 100% jurídicas SEM números de obra. "
+    "Se existir R$, qtde, m², m³, UN ou valores numéricos de custo, EXTRAIA.\n"
+    "Preserve a ordem de leitura (topo→baixo).\n"
+    "Retorne orcamento_itens vazio APENAS se a página não tiver qualquer dado numérico de custo/quantidade."
 )
 
+FULL_PDF_ANALITICO_SYSTEM_PROMPT = ANALITICO_FULL_SYSTEM_PROMPT
+
 FULL_PDF_PAGE_USER_TEMPLATE = (
-    "Extraia TODAS as linhas orçamentárias visíveis nesta página ({page}/{total_pages}) do documento. "
-    "Inclua grupos, subgrupos, itens, composições e insumos. "
-    "Se a página não contiver dados de orçamento, retorne orcamento_itens como array vazio.\n\n"
-    "TEXTO EXTRAÍDO DA PÁGINA (referência; a imagem prevalece):\n{text_snippet}"
+    "Extraia TODAS as linhas orçamentárias desta página ({page}/{total_pages}). "
+    "Inclua grupos, itens, composições e insumos — em tabela OU em texto corrido.\n"
+    "Para texto narrativo: cada serviço com quantidade/unidade/preço vira um item no JSON.\n\n"
+    "TEXTO EXTRAÍDO DA PÁGINA (use junto com a imagem):\n{text_snippet}"
+)
+
+FULL_PDF_TEXTUAL_RETRY_ADDON = (
+    "\n\nREFORÇO — MODO TEXTO CORRIDO:\n"
+    "Esta página parece conter orçamento em prosa ou edital com valores (R$, qtde, unidades). "
+    "Extraia TODOS os serviços/itens mencionados com valores e quantidades, mesmo sem tabela visível. "
+    "Não retorne array vazio se existirem valores monetários ou quantidades de serviços no texto/imagem."
+)
+
+FULL_PDF_AGGRESSIVE_RETRY_ADDON = (
+    "\n\nVARREDURA AGRESSIVA:\n"
+    "A página tem números/valores visíveis. Extraia TUDO: cada menção a serviço, quantidade, "
+    "unidade (m², m³, un, h), preço unitário, total, BDI, mesmo em cláusulas do edital. "
+    "Crie linhas tipo_linha='item' para cada bloco com custo. NÃO retorne array vazio."
 )
 
 _MAX_FULL_PDF_PAGES = int(os.getenv("ANALITICO_MAX_PAGES", "60"))
@@ -217,13 +247,18 @@ def _parse_json_content(content: str) -> Dict[str, Any]:
 
 import base64
 
-def _pdf_page_to_base64_image(pdf_content: bytes, page_number: int) -> str:
+def _pdf_page_to_base64_image(
+    pdf_content: bytes,
+    page_number: int,
+    *,
+    resolution: int = 150,
+) -> str:
     """Converte uma página do PDF para uma imagem base64 JPEG."""
     with pdfplumber.open(BytesIO(pdf_content)) as pdf:
         if page_number < 1 or page_number > len(pdf.pages):
             raise ValueError(f"Página {page_number} inválida.")
         page = pdf.pages[page_number - 1]
-        im = page.to_image(resolution=150).original
+        im = page.to_image(resolution=resolution).original
         buffered = BytesIO()
         im.convert("RGB").save(buffered, format="JPEG")
         return base64.b64encode(buffered.getvalue()).decode("utf-8")
@@ -515,10 +550,17 @@ def _should_skip_extracted_row(tipo: str, descricao: str, codigo: str) -> bool:
     return False
 
 
-def _should_skip_hierarchical_row(tipo: str, descricao: str) -> bool:
+def _should_skip_hierarchical_row(
+    tipo: str,
+    descricao: str,
+    *,
+    quantidade: float = 0.0,
+    valor_total: float = 0.0,
+) -> bool:
     desc_lower = descricao.lower().strip()
     if not descricao and tipo == "item":
-        return True
+        if quantidade <= 0 and valor_total <= 0:
+            return True
     junk_markers = (
         "item | descrição",
         "código | descrição",
@@ -539,7 +581,12 @@ def _normalize_hierarchical_items(raw_items: Any) -> List[Dict[str, Any]]:
         if not isinstance(item, dict):
             continue
         row = _coerce_row_fields(item)
-        if _should_skip_hierarchical_row(row["tipo_linha"], row["descricao"]):
+        if _should_skip_hierarchical_row(
+            row["tipo_linha"],
+            row["descricao"],
+            quantidade=float(row.get("quantidade") or 0),
+            valor_total=float(row.get("valor_total") or 0),
+        ):
             continue
         normalized.append(row)
     return normalized
@@ -924,12 +971,18 @@ async def _extract_analitico_from_page(
     page_number: int,
     total_pages: int,
     image_detail: str = "high",
+    textual_mode: bool = False,
+    aggressive: bool = False,
 ) -> List[Dict[str, Any]]:
-    page_text = _extract_page_text(pdf_content, page_number)
+    max_chars = 12000 if textual_mode else 8000
+    page_text = _extract_page_text(pdf_content, page_number, max_chars=max_chars)
     base64_image: str | None = None
     if image_detail != "text":
         try:
-            base64_image = _pdf_page_to_base64_image(pdf_content, page_number)
+            img_res = 200 if textual_mode or aggressive else 150
+            base64_image = _pdf_page_to_base64_image(
+                pdf_content, page_number, resolution=img_res
+            )
         except Exception as exc:
             logger.warning("Imagem indisponível pág %s: %s", page_number, exc)
             base64_image = None
@@ -939,10 +992,14 @@ async def _extract_analitico_from_page(
         total_pages=total_pages,
         text_snippet=page_text or "(sem texto extraído)",
     )
+    if textual_mode:
+        user_text += FULL_PDF_TEXTUAL_RETRY_ADDON
+    if aggressive:
+        user_text += FULL_PDF_AGGRESSIVE_RETRY_ADDON
 
-    vision_detail = "high" if image_detail == "high" else "low"
+    vision_detail = "high" if image_detail in ("high", "text") or textual_mode else "low"
     messages: List[Dict[str, Any]] = [
-        {"role": "system", "content": FULL_PDF_ANALITICO_SYSTEM_PROMPT},
+        {"role": "system", "content": ANALITICO_FULL_SYSTEM_PROMPT},
     ]
     if base64_image:
         messages.append(
@@ -976,6 +1033,43 @@ async def _extract_analitico_from_page(
     parsed = json.loads(raw_content)
     raw_items = parsed.get("orcamento_itens") if isinstance(parsed, dict) else []
     return _normalize_hierarchical_items(raw_items)
+
+
+async def _extract_analitico_page_with_retries(
+    client: AsyncOpenAI,
+    *,
+    pdf_content: bytes,
+    page_number: int,
+    total_pages: int,
+) -> List[Dict[str, Any]]:
+    """Sempre alta resolução + modo texto; retenta se a primeira passagem vier vazia."""
+    page_items = await _extract_analitico_from_page(
+        client,
+        pdf_content=pdf_content,
+        page_number=page_number,
+        total_pages=total_pages,
+        image_detail="high",
+        textual_mode=True,
+    )
+    if page_items:
+        return page_items
+
+    if _ANALITICO_PAGE_DELAY_SECONDS > 0:
+        await asyncio.sleep(_ANALITICO_PAGE_DELAY_SECONDS)
+
+    logger.info(
+        "PDF analítico pág %s: retentativa agressiva (texto + imagem)",
+        page_number,
+    )
+    return await _extract_analitico_from_page(
+        client,
+        pdf_content=pdf_content,
+        page_number=page_number,
+        total_pages=total_pages,
+        image_detail="high",
+        textual_mode=True,
+        aggressive=True,
+    )
 
 
 def _extract_document_metadata(
@@ -1035,7 +1129,12 @@ async def process_full_pdf_analitico(
     _ensure_api_key()
     t0 = time.perf_counter()
     client = _get_client()
-    page_candidates = _detect_budget_page_candidates(pdf_content, max_pages=max_pages)
+    primary_candidates = _detect_budget_page_candidates(pdf_content, max_pages=max_pages)
+    page_candidates = list(primary_candidates)
+    if not page_candidates:
+        page_candidates = detect_readable_pages_for_rescan(
+            pdf_content, max_pages=max_pages
+        )
     if not page_candidates:
         raise OpenAIServiceError(
             "Não foi possível ler páginas do PDF.",
@@ -1044,6 +1143,7 @@ async def process_full_pdf_analitico(
         )
 
     total_pages = len(page_candidates)
+    scanned_pages: set[int] = set()
     _emit_progress(
         progress_callback,
         {
@@ -1074,13 +1174,13 @@ async def process_full_pdf_analitico(
             },
         )
 
+        scanned_pages.add(page_num)
         try:
-            page_items = await _extract_analitico_from_page(
+            page_items = await _extract_analitico_page_with_retries(
                 client,
                 pdf_content=pdf_content,
                 page_number=page_num,
                 total_pages=total_pages,
-                image_detail=candidate.image_detail,
             )
             for item in page_items:
                 item["_source_page"] = page_num
@@ -1091,12 +1191,14 @@ async def process_full_pdf_analitico(
                     "items": len(page_items),
                     "image_detail": candidate.image_detail,
                     "table_score": candidate.table_score,
+                    "text_score": candidate.text_score,
                 }
             )
             logger.info(
-                "PDF analítico pág %s (%s): %s linhas",
+                "PDF analítico pág %s (%s, texto=%s): %s linhas",
                 page_num,
                 candidate.image_detail,
+                candidate.text_score,
                 len(page_items),
             )
         except Exception as exc:
@@ -1115,9 +1217,63 @@ async def process_full_pdf_analitico(
         )
 
     if not combined_hierarchical:
+        logger.warning(
+            "PDF analítico: varredura ampla — nenhuma linha na 1ª passagem (%s págs)",
+            total_pages,
+        )
+        rescan_candidates = [
+            c
+            for c in detect_readable_pages_for_rescan(pdf_content, max_pages=max_pages)
+            if c.page_number not in scanned_pages
+        ]
+        if not rescan_candidates:
+            rescan_candidates = detect_readable_pages_for_rescan(
+                pdf_content, max_pages=max_pages
+            )
+        rescan_total = len(rescan_candidates)
+        _emit_progress(
+            progress_callback,
+            {
+                "phase": "processing",
+                "pages_total": rescan_total,
+                "pages_done": 0,
+                "message": f"Varredura ampla em {rescan_total} página(s)…",
+            },
+        )
+        for r_index, candidate in enumerate(rescan_candidates):
+            page_num = candidate.page_number
+            if r_index > 0 and _ANALITICO_PAGE_DELAY_SECONDS > 0:
+                await asyncio.sleep(_ANALITICO_PAGE_DELAY_SECONDS)
+            try:
+                page_items = await _extract_analitico_page_with_retries(
+                    client,
+                    pdf_content=pdf_content,
+                    page_number=page_num,
+                    total_pages=rescan_total,
+                )
+                for item in page_items:
+                    item["_source_page"] = page_num
+                combined_hierarchical.extend(page_items)
+                pages_meta.append(
+                    {
+                        "page": page_num,
+                        "items": len(page_items),
+                        "pass": "broad_rescan",
+                    }
+                )
+            except Exception as exc:
+                logger.warning("Varredura ampla pág %s: %s", page_num, exc)
+
+    if not combined_hierarchical:
+        logger.warning(
+            "PDF analítico sem linhas — páginas: %s",
+            pages_meta,
+        )
         raise OpenAIServiceError(
             "Nenhuma linha orçamentária encontrada no PDF. "
-            "Verifique se o documento contém planilha analítica ou anexo de orçamento.",
+            f"Foram analisadas {total_pages} página(s) em tabelas, textos e imagens, "
+            "sem itens com quantidade ou valores. "
+            "Confira se o anexo contém serviços com preços/quantidades legíveis.",
             status_code=422,
             code="no_budget_lines",
         )

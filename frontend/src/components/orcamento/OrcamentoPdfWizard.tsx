@@ -169,11 +169,12 @@ export function OrcamentoPdfWizard({
       setUploadId(currentUploadId);
 
       setPhase("processing_ai");
-      setProcessingDetail("Identificando páginas com planilha orçamentária…");
+      setProcessingDetail("Identificando páginas com quantidades e valores (texto, tabela ou imagem)…");
       setProgressPercent(2);
       console.info(`[${logTag}] Processamento integral do PDF:`, currentUploadId);
 
       const result = await processAnaliticoFullPdf(currentUploadId, {
+        forceReprocess: true,
         onProgress: (update) => {
           const total = update.pages_total || 0;
           const done = update.pages_done || 0;
@@ -202,6 +203,7 @@ export function OrcamentoPdfWizard({
       await finishWithResult(currentUploadId, result);
     } catch (error: unknown) {
       const msg = error instanceof Error ? error.message : "Erro ao processar arquivo";
+      console.error(`[${logTag}] Falha no processamento integral:`, error);
       setErrorMessage(msg);
       setPhase("pick_file");
       toast.error("Falha no processamento", { description: msg });
@@ -345,7 +347,7 @@ export function OrcamentoPdfWizard({
           <p className="text-sm text-slate-500">ou clique para selecionar</p>
           <p className="mt-2 text-xs text-slate-400">
             {isFullPdf
-              ? "A IA analisará todo o conteúdo do documento — não é necessário selecionar tabelas"
+              ? "A IA lê planilhas e também trechos em texto do edital com quantidades e valores"
               : "Suporta arquivos PDF de até 50MB"}
           </p>
         </div>

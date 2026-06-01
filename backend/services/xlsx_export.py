@@ -27,7 +27,8 @@ DEFAULT_MODELS = {
 
 HEADER_FILL = PatternFill(start_color="1F4E78", end_color="1F4E78", fill_type="solid")
 HEADER_FONT = Font(bold=True, color="FFFFFF", size=10)
-GROUP_FILL = PatternFill(start_color="D1D5DB", end_color="D1D5DB", fill_type="solid")
+GROUP_FILL = PatternFill(start_color="D9D9D9", end_color="D9D9D9", fill_type="solid")
+ANALITICO_GROUP_FILL = PatternFill(start_color="D9D9D9", end_color="D9D9D9", fill_type="solid")
 GROUP_FONT = Font(bold=True, size=10)
 COMP_FONT = Font(italic=True, size=9, color="475569")
 TOTAL_FILL = PatternFill(start_color="E8F4F8", end_color="E8F4F8", fill_type="solid")
@@ -104,6 +105,8 @@ def prepare_hierarchical_analitico_rows(items: List[Dict[str, Any]]) -> List[Dic
         row["porcentagem"] = _coerce_number(raw.get("porcentagem") or raw.get("percentual"))
         row["tipo_linha"] = _resolve_tipo_linha(raw)
         row["banco"] = str(raw.get("banco") or "").strip()
+        row["valor_unitario"] = row.get("unit_com_bdi") or row.get("unitPrice")
+        row["valor_total"] = row.get("total_com_bdi")
         row["_order"] = idx
         rows.append(row)
     return rows
@@ -312,8 +315,8 @@ def gerar_aba_analitica(
     encargos_sociais: str | None = None,
 ) -> None:
     """
-    Preenche aba no formato NOVACAP (referência Drenagem Ceilândia Norte).
-    Colunas: A=Item/Rótulo | B=Código | C=Banco | D=Descrição | E=Tipo | G=Und | H=Quant | I=Porcent | J=Valor Unit | K=Total
+    Planilha analítica — colunas do edital (A–H):
+    Item | Código | Banco | Descrição | Und | Quant. | Valor Unit | Total
     """
     if not bancos_referencia:
         bancos = sorted(
@@ -329,7 +332,7 @@ def gerar_aba_analitica(
         bdi_values = [float(r.get("bdi") or 0) for r in rows if float(r.get("bdi") or 0) > 0]
         bdi_percent = sum(bdi_values) / len(bdi_values) if bdi_values else None
 
-    data_start = _write_novacap_metadata_header(
+    meta_end = _write_novacap_metadata_header(
         ws,
         nome_obra=nome_obra,
         bancos_referencia=bancos_referencia,
@@ -337,84 +340,139 @@ def gerar_aba_analitica(
         encargos_sociais=encargos_sociais,
     )
 
-    total_geral = 0.0
+    header_row = meta_end
+    headers = [
+        "Item",
+        "Código",
+        "Banco",
+        "Descrição",
+        "Und",
+        "Quant.",
+        "Valor Unit",
+        "Total",
+    ]
+    for col_num, header in enumerate(headers, 1):
+        cell = ws.cell(row=header_row, column=col_num)
+        cell.value = header
+        cell.font = HEADER_FONT
+        cell.fill = HEADER_FILL
+        cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+        cell.border = THIN_BORDER
+
+    data_start = header_row + 1
+    open_grupos: List[Tuple[int, int]] = []
+
+    def _close_grupo(grupo_row: int, child_start: int, child_end: int) -> None:
+        if child_end < child_start:
+            return
+        total_cell = ws.cell(row=grupo_row, column=8)
+        total_cell.value = f"=SUM(H{child_start}:H{child_end})"
+        total_cell.number_format = "#,##0.00"
+        total_cell.font = GROUP_FONT
+        total_cell.alignment = Alignment(horizontal="right", vertical="center")
 
     for idx, row_data in enumerate(rows):
         row_num = data_start + idx
-        tipo = row_data.get("tipo_linha") or "item"
+        tipo = str(row_data.get("tipo_linha") or "item").lower()
         is_grupo = tipo == "grupo"
         is_comp = tipo == "composicao"
 
-        item_num = row_data.get("item_numero") or ""
-        rotulo = row_data.get("rotulo_linha") or ""
-        col_a = f" {item_num} " if item_num else rotulo
-        codigo = row_data.get("code") or ""
-        banco = row_data.get("banco") or ""
-        descricao = row_data.get("description") or ""
-        tipo_cat = row_data.get("tipo_categoria") or ""
-        unidade = row_data.get("unit") or ""
-        qty = row_data.get("qty") or 0
-        pct = row_data.get("porcentagem") or 0
-        unit_val = row_data.get("unit_com_bdi") or row_data.get("valor_unitario") or 0
+        item_num = str(row_data.get("item_numero") or "").strip()
+        rotulo = str(row_data.get("rotulo_linha") or "").strip()
+        col_a = item_num or rotulo
+        codigo = str(row_data.get("code") or row_data.get("codigo") or "").strip()
+        banco = str(row_data.get("banco") or "").strip()
+        descricao = str(row_data.get("description") or row_data.get("descricao") or "").strip()
+        unidade = str(row_data.get("unit") or row_data.get("unidade") or "").strip()
+        qty = _coerce_number(row_data.get("qty") or row_data.get("quantidade"))
+        bdi = _coerce_bdi(row_data.get("bdi") or row_data.get("BDI"))
+        unit_val = _coerce_number(
+            row_data.get("unitPrice")
+            or row_data.get("valor_unitario")
+            or row_data.get("unit_com_bdi")
+        )
 
-        row_fill = GROUP_FILL if is_grupo else (ZEBRA_LIGHT if idx % 2 == 0 else ZEBRA_WHITE)
+        row_fill = ANALITICO_GROUP_FILL if is_grupo else (ZEBRA_LIGHT if idx % 2 == 0 else ZEBRA_WHITE)
+
+        if is_grupo:
+            if open_grupos:
+                prev_row, child_start = open_grupos.pop()
+                _close_grupo(prev_row, child_start, row_num - 1)
+            for col in range(1, 9):
+                cell = ws.cell(row=row_num, column=col)
+                cell.fill = ANALITICO_GROUP_FILL
+                cell.font = GROUP_FONT
+                cell.border = THIN_BORDER
+            ws.cell(row=row_num, column=1).value = col_a
+            ws.cell(row=row_num, column=4).value = descricao
+            total_cell = ws.cell(row=row_num, column=8)
+            total_cell.font = GROUP_FONT
+            total_cell.fill = ANALITICO_GROUP_FILL
+            total_cell.border = THIN_BORDER
+            total_cell.alignment = Alignment(horizontal="right", vertical="center")
+            open_grupos.append((row_num, row_num + 1))
+            continue
 
         values = {
             1: col_a,
-            2: codigo if not is_grupo else None,
-            3: banco if not is_grupo else None,
+            2: codigo,
+            3: banco,
             4: descricao,
-            5: tipo_cat if not is_grupo else None,
-            7: unidade if not is_grupo else None,
-            8: qty if not is_grupo and qty else None,
-            9: pct if not is_grupo and pct else None,
-            10: unit_val if not is_grupo and unit_val else None,
-            11: None,
+            5: unidade,
+            6: qty if qty else None,
+            7: unit_val if unit_val else None,
         }
 
         for col_num, value in values.items():
             cell = ws.cell(row=row_num, column=col_num)
             cell.border = THIN_BORDER
             cell.fill = row_fill
-
-            if col_num == 11 and not is_grupo and qty and unit_val:
-                qty_col = get_column_letter(8)
-                unit_col = get_column_letter(10)
-                cell.value = f"={qty_col}{row_num}*{unit_col}{row_num}"
-                cell.number_format = "#,##0.00"
-                total_geral += float(qty) * float(unit_val)
-            elif col_num == 11 and is_grupo:
-                static_total = row_data.get("total_com_bdi") or 0
-                if static_total:
-                    cell.value = static_total
-                    cell.number_format = "#,##0.00"
-            elif col_num == 11 and value is not None:
-                cell.value = value
-                cell.number_format = "#,##0.00"
-            else:
-                cell.value = value
-                if col_num == 8:
-                    cell.number_format = "#,##0.0000"
-                elif col_num in (9, 10):
-                    cell.number_format = "#,##0.00"
-
-            if is_grupo:
-                cell.font = GROUP_FONT
-            elif is_comp and col_num == 4:
-                cell.font = COMP_FONT
-                cell.alignment = Alignment(horizontal="left", vertical="center", indent=1)
-            elif col_num in (8, 9, 10, 11):
+            cell.value = value
+            if col_num == 6:
+                cell.number_format = "#,##0.0000"
                 cell.alignment = Alignment(horizontal="right", vertical="center")
+            elif col_num == 7:
+                cell.number_format = "#,##0.00"
+                cell.alignment = Alignment(horizontal="right", vertical="center")
+            elif col_num == 4 and is_comp:
+                cell.font = COMP_FONT
+                cell.alignment = Alignment(horizontal="left", vertical="center", indent=2)
+            elif col_num == 4:
+                cell.alignment = Alignment(horizontal="left", vertical="center", wrap_text=True)
             else:
-                cell.alignment = Alignment(horizontal="left", vertical="center", wrap_text=col_num == 4)
+                cell.alignment = Alignment(horizontal="left", vertical="center")
 
-        if not is_grupo and tipo == "item":
-            total_geral += float(row_data.get("total_com_bdi") or 0)
+        total_cell = ws.cell(row=row_num, column=8)
+        total_cell.border = THIN_BORDER
+        total_cell.fill = row_fill
+        total_cell.alignment = Alignment(horizontal="right", vertical="center")
+        total_cell.number_format = "#,##0.00"
+
+        qty_col = get_column_letter(6)
+        unit_col = get_column_letter(7)
+        if qty and unit_val:
+            if bdi > 0:
+                total_cell.value = (
+                    f"=ROUND({qty_col}{row_num}*{unit_col}{row_num}*(1+{bdi}/100),2)"
+                )
+            else:
+                total_cell.value = f"=ROUND({qty_col}{row_num}*{unit_col}{row_num},2)"
+        else:
+            static_total = _coerce_number(
+                row_data.get("total_com_bdi") or row_data.get("valor_total")
+            )
+            if static_total > 0:
+                total_cell.value = static_total
+
+    last_row = data_start + len(rows) - 1
+    while open_grupos:
+        grupo_row, child_start = open_grupos.pop()
+        _close_grupo(grupo_row, child_start, last_row)
 
     ws.freeze_panes = f"A{data_start}"
     _apply_col_widths(
         ws,
-        {"A": 14, "B": 14, "C": 12, "D": 48, "E": 22, "G": 8, "H": 12, "I": 10, "J": 14, "K": 16},
+        {"A": 14, "B": 14, "C": 12, "D": 48, "E": 8, "F": 12, "G": 14, "H": 16},
     )
 
 

@@ -11,6 +11,7 @@ export type LinhaAnalitica = {
   tipoCategoria: string;
   unidade: string;
   quantidade: number;
+  bdi: number;
   porcentagem: number;
   valorUnitario: number;
   valorTotal: number;
@@ -34,11 +35,14 @@ export function mapRawToLinhaAnalitica(raw: unknown, index: number): LinhaAnalit
   const valorUnitario = parseEditableNumber(
     item.valor_unitario ?? item.unitValue ?? item.unitPrice ?? item.unit_com_bdi,
   );
+  const bdi = parseEditableNumber(String(item.bdi ?? item.BDI ?? 0).replace("%", ""));
   const valorTotalExplicit = parseEditableNumber(
     item.valor_total ?? item.totalValue ?? item.lineTotal ?? item.total_com_bdi,
   );
   const valorTotal =
-    valorTotalExplicit > 0 ? valorTotalExplicit : quantidade * valorUnitario;
+    valorTotalExplicit > 0
+      ? valorTotalExplicit
+      : quantidade * valorUnitario * (1 + bdi / 100);
 
   return {
     id: index + 1,
@@ -51,6 +55,7 @@ export function mapRawToLinhaAnalitica(raw: unknown, index: number): LinhaAnalit
     tipoCategoria: String(item.tipo_categoria ?? item.tipoCategoria ?? "").trim(),
     unidade: String(item.unidade ?? item.unit ?? "").trim(),
     quantidade,
+    bdi,
     porcentagem: parseEditableNumber(item.porcentagem ?? item.percentual),
     valorUnitario,
     valorTotal,
@@ -65,6 +70,9 @@ export function mapRawListToLinhasAnaliticas(rawItems: unknown[]): LinhaAnalitic
   }
   return linhas;
 }
+
+/** Reexportado para uso na tela analítica. */
+export { parseEditableNumber } from "./recalcularCurvaABC";
 
 export function linhasToExportPayload(linhas: LinhaAnalitica[]): Record<string, unknown>[] {
   return linhas.map((linha) => ({
@@ -83,6 +91,8 @@ export function linhasToExportPayload(linhas: LinhaAnalitica[]): Record<string, 
     unit: linha.unidade,
     quantidade: linha.quantidade,
     qty: linha.quantidade,
+    bdi: linha.bdi,
+    BDI: linha.bdi,
     porcentagem: linha.porcentagem,
     valor_unitario: linha.valorUnitario,
     unitPrice: linha.valorUnitario,

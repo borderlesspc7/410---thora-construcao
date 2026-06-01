@@ -64,7 +64,13 @@ def complete_job(upload_id: str, result: Dict[str, Any]) -> None:
 
 
 def fail_job(upload_id: str, error: str) -> None:
-    update_job(upload_id, status="failed", error=error, message="Falha na análise")
+    logger.error("Orçamento analítico — job %s falhou: %s", upload_id, error)
+    update_job(
+        upload_id,
+        status="failed",
+        error=error,
+        message=error[:240] if error else "Falha na análise",
+    )
 
 
 def clear_job(upload_id: str) -> None:

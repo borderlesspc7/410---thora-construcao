@@ -17,11 +17,12 @@ export default defineConfig({
     },
     port: 8000,
     strictPort: true,
+    // HMR na mesma porta do dev server (evita ws://localhost:5173 → 400)
     hmr: {
       protocol: "ws",
       host: "localhost",
-      port: 5173,
-      clientPort: 5173,
+      port: 8000,
+      clientPort: 8000,
     },
   },
 })
