@@ -68,7 +68,8 @@ DETECTION_USER_PROMPT_TEMPLATE = {
 }
 
 EXTRACTION_SYSTEM_PROMPT = (
-    "Você é um Engenheiro de Custos especialista em análise de dados. Sua única missão é extrair os itens da planilha de ORÇAMENTO DETALHADO de arquivos PDF de licitações e estruturá-los em um JSON estrito.\n\n"
+    "Você é um Engenheiro de Custos especialista em análise de dados. Seu único objetivo é extrair INSumos, SERVIÇOS, MATERIAIS e EQUIPAMENTOS de planilhas orçamentárias. SE o texto fornecido for apenas descritivo, cláusulas de edital, regras de contrato ou descrição de objeto, RETORNE UM ARRAY VAZIO. Nunca transforme cláusulas em itens de custo.\n\n"
+    "Sua única missão é extrair os itens da planilha de ORÇAMENTO DETALHADO de arquivos PDF de licitações e estruturá-los em um JSON estrito.\n\n"
     "REGRAS DE EXTRAÇÃO E MAPEAMENTO ESPACIAL (MUITO IMPORTANTE):\n\n"
     "0. ORDEM DAS COLUNAS NO PDF (da esquerda para a direita): Código | Descrição do Serviço | BDI | Unid. | Qtde | Preço Unit. | Preço total. "
     "Variante comum em licitações: Código | Descrição | BDI | Unid. | Qtde. Máxima | Qtde. Mínima | Preço Unit. | Preço total — use Qtde. Máxima como 'quantidade' quando existirem duas colunas de qtde. "
@@ -85,6 +86,7 @@ EXTRACTION_SYSTEM_PROMPT = (
     "   - 'item': serviços principais com código e quantidade (ex: numeração 1.1, 1.2).\n"
     "   - 'composicao': insumos/subitens indentados sob um item (composição analítica, ex: 1.1.1).\n"
     "8. item_numero: numeração hierárquica exata do edital (ex: '1', '1.1', '1.1.1'). Use null se ausente.\n"
+    "   A coluna item_numero DEVE preservar rigorosamente a numeração original do PDF (ex: 1, 1.1, 1.1.1). Não crie sequências novas, copie o índice exato que está no documento.\n"
     "9. banco: fonte de referência (SINAPI, SICRO, Próprio, etc.). Use null se não houver.\n"
     "10. REMOÇÃO DE LIXO: Ignore cabeçalhos repetidos de coluna, 'RESUMO GERAL', 'MAPA DE COTAÇÃO', linhas institucionais.\n"
     "    NÃO remova linhas de grupo, item ou composição da planilha analítica.\n\n"
@@ -128,6 +130,7 @@ ANALITICO_FULL_SYSTEM_PROMPT = (
     "Se só houver valor total, preencha valor_total e estime quantidade=1 se necessário.\n"
     "rotulo_linha, tipo_categoria, porcentagem: quando existirem; senão null ou 0.0.\n"
     "item_numero: numeração hierárquica (1, 1.1, 1.1.1) ou null.\n\n"
+    "A coluna item_numero DEVE preservar rigorosamente a numeração original do PDF (ex: 1, 1.1, 1.1.1). Não invente ou reindexe os itens.\n\n"
     "Ignore apenas: cabeçalhos repetidos de coluna, páginas 100% jurídicas SEM números de obra. "
     "Se existir R$, qtde, m², m³, UN ou valores numéricos de custo, EXTRAIA.\n"
     "Preserve a ordem de leitura (topo→baixo).\n"
@@ -514,10 +517,26 @@ def _coerce_row_fields(item: Dict[str, Any]) -> Dict[str, Any]:
     ).strip() or None
     porcentagem = _coerce_number(item.get("porcentagem") or item.get("Porcent.") or item.get("percentual"))
 
+    # Heurística para forçar tipo_linha quando o extraído é ambíguo
+    has_code = bool(codigo)
+    has_unit = bool(str(item.get("unidade") or item.get("Unidade") or item.get("unit") or "").strip())
+    has_price = float(valor_unitario or 0.0) > 0.0 or float(total or 0.0) > 0.0
+
     if rotulo and not item_number:
         rotulo_lower = rotulo.lower()
         if rotulo_lower in ("composição", "composicao", "composição auxiliar", "composicao auxiliar", "insumo"):
             tipo_linha = "composicao"
+
+    # If no code, no unit and no price -> likely a group title
+    desc_candidate = descricao or rotulo or ""
+    if not has_code and not has_unit and not has_price:
+        # If description looks like a short title or starts with hierarchical number, mark as group
+        if re.match(r"^\d+(?:\.\d+)*\b", desc_candidate) or (len(desc_candidate.split()) < 8 and desc_candidate.isupper()):
+            tipo_linha = "grupo"
+
+    # If has unit and price, it's an item
+    if has_unit and float(valor_unitario or 0.0) > 0.0:
+        tipo_linha = "item"
 
     return {
         "item": item_number,
@@ -657,6 +676,20 @@ async def identify_tables(pdf_content: bytes) -> List[Dict[str, Any]]:
         raw_content = response.choices[0].message.content or "{}"
         parsed = _parse_json_content(raw_content)
         candidates = _normalize_table_candidates(parsed)
+
+        # Further filter candidates using local heuristics to avoid sending edital pages
+        try:
+            budget_candidates = detect_budget_pages(pdf_content, max_pages=_MAX_DETECTION_PAGES)
+            allowed_pages = {c.page_number for c in budget_candidates}
+            filtered = [c for c in candidates if c.get("num_pagina") in allowed_pages]
+            if filtered:
+                candidates = filtered
+            else:
+                # If none passed the local filter, return empty to avoid false positives
+                candidates = []
+        except Exception:
+            # On any detection error, fall back to original candidates (conservative)
+            logger.exception("Erro ao aplicar filtro local de budget pages")
 
         log_ai_exchange(
             operation="identify_tables",

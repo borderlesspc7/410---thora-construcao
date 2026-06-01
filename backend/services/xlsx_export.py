@@ -344,6 +344,7 @@ def gerar_aba_analitica(
     headers = [
         "Item",
         "Código",
+        "Tipo",
         "Banco",
         "Descrição",
         "Und",
@@ -362,11 +363,61 @@ def gerar_aba_analitica(
     data_start = header_row + 1
     open_grupos: List[Tuple[int, int]] = []
 
+    # Preprocess rows: force totals calculation, classify groups, and auto-number children
+    child_counters: Dict[str, int] = {}
+    current_group_key: str | None = None
+    group_seq = 0
+    for r in rows:
+        # Determine basic flags
+        has_unit_field = bool(str(r.get("unit") or "").strip())
+        unit_val = _coerce_number(r.get("unit_com_bdi") or r.get("unitPrice") or r.get("valor_unitario"))
+        qty_val = _coerce_number(r.get("qty") or r.get("quantidade") or r.get("quantity"))
+
+        # Force group when no unit and no price provided
+        if not has_unit_field and unit_val <= 0:
+            r["tipo_linha"] = "grupo"
+        # If has unit and price, ensure it's an item
+        if has_unit_field and unit_val > 0:
+            r["tipo_linha"] = "item"
+
+        # Compute total deterministically
+        if qty_val > 0 and unit_val > 0:
+            computed_total = qty_val * unit_val
+            r["total_com_bdi"] = computed_total
+            r["valor_total"] = computed_total
+        else:
+            # keep existing numeric total if present
+            existing = _coerce_number(r.get("total_com_bdi") or r.get("valor_total"))
+            r["total_com_bdi"] = existing
+            r["valor_total"] = existing
+
+        # Hierarchical numbering
+        tipo = _resolve_tipo_linha(r)
+        if tipo == "grupo":
+            # extract leading group number from item_numero or description
+            raw_idx = str(r.get("item_numero") or r.get("item") or r.get("code") or r.get("description") or "").strip()
+            m = re.match(r"^\s*(\d+)(?:\b|\D)", raw_idx)
+            if m:
+                group_key = str(int(m.group(1)))
+            else:
+                group_seq += 1
+                group_key = str(group_seq)
+            r["item_numero"] = group_key
+            current_group_key = group_key
+            child_counters[group_key] = 0
+        else:
+            # child item: if no item_numero, assign based on current group
+            if not r.get("item_numero") or str(r.get("item_numero")).strip() == "":
+                if current_group_key:
+                    child_counters[current_group_key] = child_counters.get(current_group_key, 0) + 1
+                    r["item_numero"] = f"{current_group_key}.{child_counters[current_group_key]}"
+
     def _close_grupo(grupo_row: int, child_start: int, child_end: int) -> None:
         if child_end < child_start:
             return
-        total_cell = ws.cell(row=grupo_row, column=8)
-        total_cell.value = f"=SUM(H{child_start}:H{child_end})"
+        total_col = get_column_letter(9)
+        total_cell = ws.cell(row=grupo_row, column=9)
+        total_cell.value = f"=SUM({total_col}{child_start}:{total_col}{child_end})"
         total_cell.number_format = "#,##0.00"
         total_cell.font = GROUP_FONT
         total_cell.alignment = Alignment(horizontal="right", vertical="center")
@@ -381,6 +432,7 @@ def gerar_aba_analitica(
         rotulo = str(row_data.get("rotulo_linha") or "").strip()
         col_a = item_num or rotulo
         codigo = str(row_data.get("code") or row_data.get("codigo") or "").strip()
+        tipo_label = "Grupo" if is_grupo else ("Composição" if is_comp else "Item")
         banco = str(row_data.get("banco") or "").strip()
         descricao = str(row_data.get("description") or row_data.get("descricao") or "").strip()
         unidade = str(row_data.get("unit") or row_data.get("unidade") or "").strip()
@@ -398,14 +450,14 @@ def gerar_aba_analitica(
             if open_grupos:
                 prev_row, child_start = open_grupos.pop()
                 _close_grupo(prev_row, child_start, row_num - 1)
-            for col in range(1, 9):
+            for col in range(1, 10):
                 cell = ws.cell(row=row_num, column=col)
                 cell.fill = ANALITICO_GROUP_FILL
                 cell.font = GROUP_FONT
                 cell.border = THIN_BORDER
             ws.cell(row=row_num, column=1).value = col_a
-            ws.cell(row=row_num, column=4).value = descricao
-            total_cell = ws.cell(row=row_num, column=8)
+            ws.cell(row=row_num, column=5).value = descricao
+            total_cell = ws.cell(row=row_num, column=9)
             total_cell.font = GROUP_FONT
             total_cell.fill = ANALITICO_GROUP_FILL
             total_cell.border = THIN_BORDER
@@ -416,11 +468,12 @@ def gerar_aba_analitica(
         values = {
             1: col_a,
             2: codigo,
-            3: banco,
-            4: descricao,
-            5: unidade,
-            6: qty if qty else None,
-            7: unit_val if unit_val else None,
+            3: tipo_label,
+            4: banco,
+            5: descricao,
+            6: unidade,
+            7: qty if qty else None,
+            8: unit_val if unit_val else None,
         }
 
         for col_num, value in values.items():
@@ -428,41 +481,41 @@ def gerar_aba_analitica(
             cell.border = THIN_BORDER
             cell.fill = row_fill
             cell.value = value
-            if col_num == 6:
+            if col_num == 7:
                 cell.number_format = "#,##0.0000"
                 cell.alignment = Alignment(horizontal="right", vertical="center")
-            elif col_num == 7:
+            elif col_num == 8:
                 cell.number_format = "#,##0.00"
                 cell.alignment = Alignment(horizontal="right", vertical="center")
-            elif col_num == 4 and is_comp:
+            elif col_num == 5 and is_comp:
                 cell.font = COMP_FONT
                 cell.alignment = Alignment(horizontal="left", vertical="center", indent=2)
-            elif col_num == 4:
+            elif col_num == 5:
                 cell.alignment = Alignment(horizontal="left", vertical="center", wrap_text=True)
+            elif col_num == 3:
+                cell.alignment = Alignment(horizontal="center", vertical="center")
             else:
                 cell.alignment = Alignment(horizontal="left", vertical="center")
 
-        total_cell = ws.cell(row=row_num, column=8)
+        total_cell = ws.cell(row=row_num, column=9)
         total_cell.border = THIN_BORDER
         total_cell.fill = row_fill
         total_cell.alignment = Alignment(horizontal="right", vertical="center")
         total_cell.number_format = "#,##0.00"
-
-        qty_col = get_column_letter(6)
-        unit_col = get_column_letter(7)
-        if qty and unit_val:
-            if bdi > 0:
-                total_cell.value = (
-                    f"=ROUND({qty_col}{row_num}*{unit_col}{row_num}*(1+{bdi}/100),2)"
-                )
-            else:
-                total_cell.value = f"=ROUND({qty_col}{row_num}*{unit_col}{row_num},2)"
+        # Prefer deterministic computed total from normalization; fallback to formula when absent
+        static_total = _coerce_number(row_data.get("total_com_bdi") or row_data.get("valor_total"))
+        if static_total > 0:
+            total_cell.value = static_total
         else:
-            static_total = _coerce_number(
-                row_data.get("total_com_bdi") or row_data.get("valor_total")
-            )
-            if static_total > 0:
-                total_cell.value = static_total
+            qty_col = get_column_letter(7)
+            unit_col = get_column_letter(8)
+            if qty and unit_val:
+                if bdi > 0:
+                    total_cell.value = (
+                        f"=ROUND({qty_col}{row_num}*{unit_col}{row_num}*(1+{bdi}/100),2)"
+                    )
+                else:
+                    total_cell.value = f"=ROUND({qty_col}{row_num}*{unit_col}{row_num},2)"
 
     last_row = data_start + len(rows) - 1
     while open_grupos:
@@ -472,7 +525,7 @@ def gerar_aba_analitica(
     ws.freeze_panes = f"A{data_start}"
     _apply_col_widths(
         ws,
-        {"A": 14, "B": 14, "C": 12, "D": 48, "E": 8, "F": 12, "G": 14, "H": 16},
+        {"A": 14, "B": 14, "C": 12, "D": 12, "E": 48, "F": 8, "G": 12, "H": 14, "I": 16},
     )
 
 

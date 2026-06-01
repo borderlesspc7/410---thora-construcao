@@ -106,6 +106,40 @@ _BUDGET_HEADER_HINTS: dict[str, list[str]] = {
     "bdi": ["bdi", "% bdi"],
 }
 
+# Aggressive blacklist to exclude juridical/edital pages
+BLACKLIST_WORDS = [
+    "multa",
+    "penalidade",
+    "adjudicatário",
+    "adjudicatario",
+    "subcontratação",
+    "subcontratacao",
+    "licitante",
+    "habilitação",
+    "habilitacao",
+    "recurso",
+    "impugnação",
+    "impugnacao",
+    "cláusula",
+    "clausula",
+]
+
+# Required engineering whitelist terms (must appear for a page to be considered)
+WHITELIST_WORDS = [
+    "sinapi",
+    "sicro",
+    "bdi",
+    "encargos",
+    "unid",
+    "quant",
+    "composições",
+    "composicoes",
+    "insumo",
+    "m³",
+    "m2",
+    "m²",
+]
+
 _SERVICE_CODE_PATTERN = re.compile(
     r"\b(CPU\d+|[A-Z]{2,}\d{3,}|\d{5,}[A-Z]?)\b",
     re.IGNORECASE,
@@ -146,6 +180,23 @@ def _coerce_number(value: Any) -> float:
 def score_budget_table_likelihood(rows: List[List[Any]]) -> int:
     """Pontua se a matriz parece planilha de orçamento (não texto do edital)."""
     if not rows:
+        return 0
+    # Require clear budget table headers (Código, Quantidade, Valor Unitário)
+    header_rows = rows[:3]
+    header_text = " ".join(" ".join(str(c).lower() for c in row if c) for row in header_rows)
+
+    # If header suggests edital clauses like prazo/multa/cláusula, reject immediately
+    edital_forbidden = ("prazo", "multa", "multas", "cláusula", "clausula", "clausulas", "penalidade")
+    if any(k in header_text for k in edital_forbidden):
+        return 0
+
+    # Check for mandatory header tokens
+    has_codigo = any(any(k in str(c).lower() for k in _BUDGET_HEADER_HINTS["codigo"]) for row in header_rows for c in row if c)
+    has_qtd = any(any(k in str(c).lower() for k in _BUDGET_HEADER_HINTS["quantidade"]) for row in header_rows for c in row if c)
+    has_val = any(any(k in str(c).lower() for k in _BUDGET_HEADER_HINTS["valor"]) for row in header_rows for c in row if c)
+
+    # Enforce presence of the three classical engineering columns
+    if not (has_codigo and has_qtd and has_val):
         return 0
 
     score = 0
@@ -307,8 +358,35 @@ def detect_budget_pages(
             ]
             best_table = max(table_scores) if table_scores else 0
 
+            # Blacklist check: if page contains multiple juridical/editais keywords -> skip
+            lowered = text.lower()
+            blacklist_hits = sum(1 for kw in BLACKLIST_WORDS if kw in lowered)
+            if blacklist_hits >= 2:
+                # penalize heavily and skip page
+                continue
+
+            # Whitelist requirement: page must contain at least one engineering hint
+            whitelist_hits = sum(1 for kw in WHITELIST_WORDS if kw in lowered)
+
+            # Numeric/codes heuristic: count long numeric tokens (codes) and currency occurrences
+            numeric_codes = len(re.findall(r"\b\d{4,6}\b", text))
+            currency_count = len(_CURRENCY_PATTERN.findall(text)) + len(_NUMERIC_CELL_PATTERN.findall(text))
+
+            # Text density: average words per line (high -> likely prose/edital)
+            lines = [ln for ln in text.splitlines() if ln.strip()]
+            words = text.split()
+            avg_words_per_line = (len(words) / len(lines)) if lines else 0
+            if avg_words_per_line > 14 and currency_count < 2 and numeric_codes < 2:
+                # very dense prose with few numbers -> likely edital text
+                continue
+
             has_digits = bool(re.search(r"\d", text))
             is_table_page = best_table >= min_table_score
+            # require whitelist presence unless a very strong table signal exists
+            if whitelist_hits == 0 and not (best_table >= 24 or numeric_codes >= 3):
+                # not engineering jargon and not a very strong table -> skip
+                continue
+
             is_text_budget_page = text_score >= min_text_score and (
                 has_numeric or (has_digits and len(text) > 120)
             )
@@ -340,8 +418,13 @@ def detect_budget_pages(
             else:
                 detail = "low"
 
-            priority = best_table * 10 + text_score * 3 + kw_strong * 5
+            priority = best_table * 10 + text_score * 3 + kw_strong * 5 + min(numeric_codes, 10) * 2
             seen_pages.add(page_num)
+            # Only accept candidate pages if combined score is reasonably high
+            combined_score = best_table + text_score + kw_strong * 2 + min(numeric_codes, 6)
+            if combined_score < 20:
+                continue
+
             candidates.append(
                 (
                     priority,
