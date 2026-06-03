@@ -1,34 +1,12 @@
 import type { LinhaAnalitica } from "./orcamentoAnalitico";
-import { calcularLineTotalComBdi, parseEditableNumber } from "./recalcularCurvaABC";
+import { normalizarLinhasAnaliticas } from "./normalizarAnalitico";
+import { parseEditableNumber } from "./recalcularCurvaABC";
 
 export type AnaliticoEditableField = "quantidade" | "valorUnitario" | "bdi";
 
-function findNextGrupoIndex(linhas: LinhaAnalitica[], afterIndex: number): number {
-  for (let i = afterIndex + 1; i < linhas.length; i += 1) {
-    if (linhas[i].tipoLinha === "grupo") return i;
-  }
-  return linhas.length;
-}
-
-/** Soma filhos de cada grupo (de dentro para fora) e atualiza valorTotal do grupo. */
+/** Soma filhos, totais Qtd×VU e tipagem de grupos. */
 export function recalcularGruposAnalitico(linhas: LinhaAnalitica[]): LinhaAnalitica[] {
-  const next = linhas.map((linha) => ({ ...linha }));
-  const grupoIndices: number[] = [];
-  for (let i = 0; i < next.length; i += 1) {
-    if (next[i].tipoLinha === "grupo") grupoIndices.push(i);
-  }
-
-  for (let gi = grupoIndices.length - 1; gi >= 0; gi -= 1) {
-    const gIdx = grupoIndices[gi];
-    const end = findNextGrupoIndex(next, gIdx);
-    let sum = 0;
-    for (let i = gIdx + 1; i < end; i += 1) {
-      sum += next[i].valorTotal;
-    }
-    next[gIdx] = { ...next[gIdx], valorTotal: sum };
-  }
-
-  return next;
+  return normalizarLinhasAnaliticas(linhas.map((linha) => ({ ...linha })));
 }
 
 export function aplicarEdicaoAnalitica(
@@ -52,13 +30,8 @@ export function aplicarEdicaoAnalitica(
       ...row,
       [field]: parsed,
     };
-    updated.valorTotal = calcularLineTotalComBdi(
-      updated.quantidade,
-      updated.valorUnitario,
-      updated.bdi,
-    );
     return updated;
   });
 
-  return recalcularGruposAnalitico(next);
+  return normalizarLinhasAnaliticas(next);
 }

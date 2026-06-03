@@ -26,6 +26,7 @@ from config import (
 )
 
 from .ai_audit_logger import log_ai_exchange, truncate_rows_for_audit
+from .analitico_normalize import normalize_hierarchical_analitico
 from .budget_scoring import (
     BudgetPageCandidate,
     detect_budget_pages,
@@ -517,27 +518,12 @@ def _coerce_row_fields(item: Dict[str, Any]) -> Dict[str, Any]:
     ).strip() or None
     porcentagem = _coerce_number(item.get("porcentagem") or item.get("Porcent.") or item.get("percentual"))
 
-    # Heurística para forçar tipo_linha quando o extraído é ambíguo
-    has_code = bool(codigo)
-    has_unit = bool(str(item.get("unidade") or item.get("Unidade") or item.get("unit") or "").strip())
-    has_price = float(valor_unitario or 0.0) > 0.0 or float(total or 0.0) > 0.0
-
     if rotulo and not item_number:
         rotulo_lower = rotulo.lower()
         if rotulo_lower in ("composição", "composicao", "composição auxiliar", "composicao auxiliar", "insumo"):
             tipo_linha = "composicao"
 
-    # If no code, no unit and no price -> likely a group title
-    desc_candidate = descricao or rotulo or ""
-    if not has_code and not has_unit and not has_price:
-        # If description looks like a short title or starts with hierarchical number, mark as group
-        if re.match(r"^\d+(?:\.\d+)*\b", desc_candidate) or (len(desc_candidate.split()) < 8 and desc_candidate.isupper()):
-            tipo_linha = "grupo"
-
-    # If has unit and price, it's an item
-    if has_unit and float(valor_unitario or 0.0) > 0.0:
-        tipo_linha = "item"
-
+    # Grupo/item definitivo é aplicado em analitico_normalize (qtd e VU zerados → grupo)
     return {
         "item": item_number,
         "item_numero": item_number,
@@ -551,7 +537,7 @@ def _coerce_row_fields(item: Dict[str, Any]) -> Dict[str, Any]:
         "grupo": grupo_val or None,
         "descricao": descricao,
         "bdi": bdi,
-        "unidade": str(unidade).strip() or "un",
+        "unidade": str(unidade).strip(),
         "quantidade": quantidade,
         "valor_unitario": valor_unitario,
         "valor_total": total,
@@ -608,7 +594,7 @@ def _normalize_hierarchical_items(raw_items: Any) -> List[Dict[str, Any]]:
         ):
             continue
         normalized.append(row)
-    return normalized
+    return normalize_hierarchical_analitico(normalized)
 
 
 def _normalize_structured_items(raw_items: Any) -> List[Dict[str, Any]]:
@@ -1310,6 +1296,8 @@ async def process_full_pdf_analitico(
             status_code=422,
             code="no_budget_lines",
         )
+
+    combined_hierarchical = _normalize_hierarchical_items(combined_hierarchical)
 
     normalized_items = [
         row

@@ -9,6 +9,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
+from services.analitico_normalize import normalize_hierarchical_analitico
 from services.openai_service import _coerce_bdi, _coerce_number
 
 try:
@@ -82,6 +83,15 @@ def _is_group_row(raw: Dict[str, Any]) -> bool:
     return tipo == "grupo" or "total do grupo" in desc
 
 
+def _is_analitico_grupo_visual(row_data: Dict[str, Any]) -> bool:
+    """Grupo no Excel: sem Código e sem Unidade (cinza + negrito)."""
+    if _is_group_row(row_data):
+        return True
+    codigo = str(row_data.get("code") or row_data.get("codigo") or "").strip()
+    unidade = str(row_data.get("unit") or row_data.get("unidade") or "").strip()
+    return not codigo and not unidade
+
+
 def _is_composicao_row(raw: Dict[str, Any]) -> bool:
     return _resolve_tipo_linha(raw) == "composicao"
 
@@ -91,24 +101,61 @@ def _is_executive_row(raw: Dict[str, Any]) -> bool:
 
 
 def prepare_hierarchical_analitico_rows(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Preserva ordem original e inclui grupo, item e composição."""
-    rows: List[Dict[str, Any]] = []
+    """Preserva ordem, tipagem, totais e numeração hierárquica (Python, não IA)."""
+    payload: List[Dict[str, Any]] = []
     for idx, raw in enumerate(items):
         if not isinstance(raw, dict):
             continue
-        row = _normalize_base_row(raw)
-        row["item_numero"] = str(
-            raw.get("item_numero") or raw.get("item") or raw.get("id") or ""
-        ).strip()
-        row["rotulo_linha"] = str(raw.get("rotulo_linha") or "").strip()
-        row["tipo_categoria"] = str(raw.get("tipo_categoria") or "").strip()
-        row["porcentagem"] = _coerce_number(raw.get("porcentagem") or raw.get("percentual"))
-        row["tipo_linha"] = _resolve_tipo_linha(raw)
-        row["banco"] = str(raw.get("banco") or "").strip()
-        row["valor_unitario"] = row.get("unit_com_bdi") or row.get("unitPrice")
-        row["valor_total"] = row.get("total_com_bdi")
-        row["_order"] = idx
-        rows.append(row)
+        payload.append(
+            {
+                **raw,
+                "item_numero": str(
+                    raw.get("item_numero") or raw.get("item") or raw.get("id") or ""
+                ).strip(),
+                "descricao": str(raw.get("descricao") or raw.get("description") or "").strip(),
+                "codigo": str(raw.get("codigo") or raw.get("code") or "").strip(),
+                "unidade": str(raw.get("unidade") or raw.get("unit") or "").strip(),
+                "quantidade": _coerce_number(raw.get("quantidade") or raw.get("qty")),
+                "valor_unitario": _coerce_number(
+                    raw.get("valor_unitario")
+                    or raw.get("unitPrice")
+                    or raw.get("unit_com_bdi")
+                ),
+                "valor_total": _coerce_number(
+                    raw.get("valor_total") or raw.get("total_com_bdi") or raw.get("totalValue")
+                ),
+                "bdi": _coerce_bdi(raw.get("bdi") or raw.get("BDI")),
+                "tipo_linha": raw.get("tipo_linha") or raw.get("tipo"),
+                "rotulo_linha": str(raw.get("rotulo_linha") or "").strip(),
+                "tipo_categoria": str(raw.get("tipo_categoria") or "").strip(),
+                "porcentagem": _coerce_number(raw.get("porcentagem") or raw.get("percentual")),
+                "banco": str(raw.get("banco") or "").strip(),
+                "_order": idx,
+            }
+        )
+
+    normalized = normalize_hierarchical_analitico(payload)
+    rows: List[Dict[str, Any]] = []
+    for row in normalized:
+        base = _normalize_base_row(row)
+        base["item_numero"] = str(row.get("item_numero") or row.get("item") or "").strip()
+        base["rotulo_linha"] = str(row.get("rotulo_linha") or "").strip()
+        base["tipo_categoria"] = str(row.get("tipo_categoria") or "").strip()
+        base["porcentagem"] = _coerce_number(row.get("porcentagem") or 0)
+        base["tipo_linha"] = str(row.get("tipo_linha") or "item")
+        base["banco"] = str(row.get("banco") or "").strip()
+        base["qty"] = _coerce_number(row.get("quantidade") or row.get("qty"))
+        base["unit"] = str(row.get("unidade") or row.get("unit") or "").strip()
+        base["unit_com_bdi"] = _coerce_number(
+            row.get("valor_unitario") or row.get("unit_com_bdi")
+        )
+        base["total_com_bdi"] = _coerce_number(
+            row.get("valor_total") or row.get("total_com_bdi")
+        )
+        base["code"] = str(row.get("codigo") or row.get("code") or "").strip()
+        base["description"] = str(row.get("descricao") or row.get("description") or "").strip()
+        base["_order"] = row.get("_order")
+        rows.append(base)
     return rows
 
 
@@ -363,55 +410,6 @@ def gerar_aba_analitica(
     data_start = header_row + 1
     open_grupos: List[Tuple[int, int]] = []
 
-    # Preprocess rows: force totals calculation, classify groups, and auto-number children
-    child_counters: Dict[str, int] = {}
-    current_group_key: str | None = None
-    group_seq = 0
-    for r in rows:
-        # Determine basic flags
-        has_unit_field = bool(str(r.get("unit") or "").strip())
-        unit_val = _coerce_number(r.get("unit_com_bdi") or r.get("unitPrice") or r.get("valor_unitario"))
-        qty_val = _coerce_number(r.get("qty") or r.get("quantidade") or r.get("quantity"))
-
-        # Force group when no unit and no price provided
-        if not has_unit_field and unit_val <= 0:
-            r["tipo_linha"] = "grupo"
-        # If has unit and price, ensure it's an item
-        if has_unit_field and unit_val > 0:
-            r["tipo_linha"] = "item"
-
-        # Compute total deterministically
-        if qty_val > 0 and unit_val > 0:
-            computed_total = qty_val * unit_val
-            r["total_com_bdi"] = computed_total
-            r["valor_total"] = computed_total
-        else:
-            # keep existing numeric total if present
-            existing = _coerce_number(r.get("total_com_bdi") or r.get("valor_total"))
-            r["total_com_bdi"] = existing
-            r["valor_total"] = existing
-
-        # Hierarchical numbering
-        tipo = _resolve_tipo_linha(r)
-        if tipo == "grupo":
-            # extract leading group number from item_numero or description
-            raw_idx = str(r.get("item_numero") or r.get("item") or r.get("code") or r.get("description") or "").strip()
-            m = re.match(r"^\s*(\d+)(?:\b|\D)", raw_idx)
-            if m:
-                group_key = str(int(m.group(1)))
-            else:
-                group_seq += 1
-                group_key = str(group_seq)
-            r["item_numero"] = group_key
-            current_group_key = group_key
-            child_counters[group_key] = 0
-        else:
-            # child item: if no item_numero, assign based on current group
-            if not r.get("item_numero") or str(r.get("item_numero")).strip() == "":
-                if current_group_key:
-                    child_counters[current_group_key] = child_counters.get(current_group_key, 0) + 1
-                    r["item_numero"] = f"{current_group_key}.{child_counters[current_group_key]}"
-
     def _close_grupo(grupo_row: int, child_start: int, child_end: int) -> None:
         if child_end < child_start:
             return
@@ -425,8 +423,8 @@ def gerar_aba_analitica(
     for idx, row_data in enumerate(rows):
         row_num = data_start + idx
         tipo = str(row_data.get("tipo_linha") or "item").lower()
-        is_grupo = tipo == "grupo"
-        is_comp = tipo == "composicao"
+        is_grupo = _is_analitico_grupo_visual(row_data)
+        is_comp = tipo == "composicao" and not is_grupo
 
         item_num = str(row_data.get("item_numero") or "").strip()
         rotulo = str(row_data.get("rotulo_linha") or "").strip()
@@ -502,20 +500,16 @@ def gerar_aba_analitica(
         total_cell.fill = row_fill
         total_cell.alignment = Alignment(horizontal="right", vertical="center")
         total_cell.number_format = "#,##0.00"
-        # Prefer deterministic computed total from normalization; fallback to formula when absent
-        static_total = _coerce_number(row_data.get("total_com_bdi") or row_data.get("valor_total"))
-        if static_total > 0:
+        qty_col = get_column_letter(7)
+        unit_col = get_column_letter(8)
+        static_total = _coerce_number(
+            row_data.get("total_com_bdi") or row_data.get("valor_total") or row_data.get("totalValue")
+        )
+        if qty > 0 and unit_val > 0:
+            computed_total = round(qty * unit_val, 2)
+            total_cell.value = computed_total if computed_total > 0 else static_total
+        elif static_total > 0:
             total_cell.value = static_total
-        else:
-            qty_col = get_column_letter(7)
-            unit_col = get_column_letter(8)
-            if qty and unit_val:
-                if bdi > 0:
-                    total_cell.value = (
-                        f"=ROUND({qty_col}{row_num}*{unit_col}{row_num}*(1+{bdi}/100),2)"
-                    )
-                else:
-                    total_cell.value = f"=ROUND({qty_col}{row_num}*{unit_col}{row_num},2)"
 
     last_row = data_start + len(rows) - 1
     while open_grupos:

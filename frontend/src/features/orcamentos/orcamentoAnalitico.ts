@@ -1,4 +1,5 @@
 import { parseEditableNumber, resolveTipoLinha } from "./recalcularCurvaABC";
+import { mapRawListToLinhasAnaliticasNormalizadas } from "./normalizarAnalitico";
 
 export type LinhaAnalitica = {
   id: number;
@@ -40,9 +41,11 @@ export function mapRawToLinhaAnalitica(raw: unknown, index: number): LinhaAnalit
     item.valor_total ?? item.totalValue ?? item.lineTotal ?? item.total_com_bdi,
   );
   const valorTotal =
-    valorTotalExplicit > 0
-      ? valorTotalExplicit
-      : quantidade * valorUnitario * (1 + bdi / 100);
+    quantidade > 0 && valorUnitario > 0
+      ? Math.round(quantidade * valorUnitario * (1 + bdi / 100) * 100) / 100
+      : valorTotalExplicit > 0
+        ? valorTotalExplicit
+        : 0;
 
   return {
     id: index + 1,
@@ -63,12 +66,7 @@ export function mapRawToLinhaAnalitica(raw: unknown, index: number): LinhaAnalit
 }
 
 export function mapRawListToLinhasAnaliticas(rawItems: unknown[]): LinhaAnalitica[] {
-  const linhas: LinhaAnalitica[] = [];
-  for (let i = 0; i < rawItems.length; i += 1) {
-    const linha = mapRawToLinhaAnalitica(rawItems[i], i);
-    if (linha) linhas.push({ ...linha, id: linhas.length + 1 });
-  }
-  return linhas;
+  return mapRawListToLinhasAnaliticasNormalizadas(rawItems);
 }
 
 /** Reexportado para uso na tela analítica. */
@@ -97,6 +95,7 @@ export function linhasToExportPayload(linhas: LinhaAnalitica[]): Record<string, 
     valor_unitario: linha.valorUnitario,
     unitPrice: linha.valorUnitario,
     valor_total: linha.valorTotal,
+    total_com_bdi: linha.valorTotal,
     totalValue: linha.valorTotal,
   }));
 }

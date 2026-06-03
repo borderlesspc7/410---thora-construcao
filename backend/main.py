@@ -69,6 +69,7 @@ from services.analitico_job import (
 from services.report_pdf import build_analysis_pdf_bytes
 from services.ai_audit_logger import log_ai_exchange
 from services.xlsx_export import save_export_workbook
+from services.analitico_normalize import normalize_hierarchical_analitico
 
 try:
     import pdfplumber
@@ -2013,9 +2014,10 @@ def _cached_analitico_payload(upload_id: str) -> Dict[str, Any] | None:
     if not data:
         return None
     items_data = data.get("itemsData") or {}
-    hierarchical = items_data.get("hierarchical_items") or []
-    if not hierarchical:
+    hierarchical_raw = items_data.get("hierarchical_items") or []
+    if not hierarchical_raw:
         return None
+    hierarchical = normalize_hierarchical_analitico(hierarchical_raw)
     ia_meta = data.get("ia_metadata") or {}
     combined_resumo = items_data.get("resumo") or ia_meta.get("combined_resumo") or {}
     normalized_items = items_data.get("items") or []
