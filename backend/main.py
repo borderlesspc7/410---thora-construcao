@@ -20,6 +20,7 @@ from pydantic import BaseModel, Field, model_validator
 
 from config import (
     FRONTEND_URLS,
+    CORS_ORIGIN_REGEX,
     IS_VERCEL,
     API_TITLE,
     API_VERSION,
@@ -1211,6 +1212,7 @@ app = FastAPI(
 app.add_middleware(
     CORSMiddleware,
     allow_origins=FRONTEND_URLS,
+    allow_origin_regex=CORS_ORIGIN_REGEX or None,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

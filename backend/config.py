@@ -45,10 +45,17 @@ FRONTEND_URLS = [
     "http://127.0.0.1:3000",
     "http://127.0.0.1:8001",
     "https://410-thora.netlify.app",
+    "https://borderles-410.netlify.app",
     os.getenv("FRONTEND_URL", ""),
     *EXTRA_FRONTEND_URLS,
 ]
 FRONTEND_URLS = [url for url in FRONTEND_URLS if url]
+
+# Permite previews e novos sites Netlify sem redeploy do backend (ex.: *.netlify.app)
+CORS_ORIGIN_REGEX = os.getenv(
+    "CORS_ORIGIN_REGEX",
+    r"https://[\w-]+\.netlify\.app",
+)
 
 # Server
 API_TITLE = "Automação de Orçamentos"
