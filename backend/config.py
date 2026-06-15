@@ -112,7 +112,10 @@ FIREBASE_STORAGE_BUCKET = os.getenv(
 )
 
 # Detecção de tabelas em PDF (limite de páginas para pdfplumber/Camelot)
-DETECT_TABLES_MAX_PAGES = int(os.getenv("DETECT_TABLES_MAX_PAGES", "60"))
+_default_detect_pages = "20" if ENVIRONMENT == "production" else "60"
+DETECT_TABLES_MAX_PAGES = int(os.getenv("DETECT_TABLES_MAX_PAGES", _default_detect_pages))
+DETECT_TABLES_MAX_CANDIDATES = int(os.getenv("DETECT_TABLES_MAX_CANDIDATES", "10"))
+DETECT_TABLES_THUMB_SCALE = float(os.getenv("DETECT_TABLES_THUMB_SCALE", "1.0"))
 
 # Redis / Celery (fila persistente de Orçamento Analítico)
 REDIS_URL = os.getenv("REDIS_URL", "").strip()

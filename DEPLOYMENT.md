@@ -22,7 +22,7 @@
 | **Branch**        | `main`                                                                                   |
 | **Runtime**       | `Python 3`                                                                               |
 | **Build Command** | `pip install -r backend/requirements.txt && pip install gunicorn uvicorn[standard]`      |
-| **Start Command** | `cd backend && gunicorn -w 4 -b 0.0.0.0:$PORT -k uvicorn.workers.UvicornWorker main:app` |
+| **Start Command** | `cd backend && gunicorn -w 1 --timeout 600 --graceful-timeout 30 -b 0.0.0.0:$PORT -k uvicorn.workers.UvicornWorker main:app` |
 
 ### 3️⃣ Configurar Variáveis de Ambiente
 

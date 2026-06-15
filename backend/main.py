@@ -30,7 +30,9 @@ from config import (
     TEMP_FOLDER,
     BASE_DIR,
     CACHE_FOLDER,
+    DETECT_TABLES_MAX_CANDIDATES,
     DETECT_TABLES_MAX_PAGES,
+    DETECT_TABLES_THUMB_SCALE,
     ENVIRONMENT,
     GEMINI_API_KEY,
     GEMINI_MODEL,
@@ -634,7 +636,7 @@ def _extract_tables_from_pdf_path(
         for page_num, page in enumerate(pdf.pages):
             if max_pages is not None and page_num >= max_pages:
                 break
-            logger.info(f"  Página {page_num + 1}: {page.width}x{page.height}")
+            logger.debug("  Página %s: %sx%s", page_num + 1, page.width, page.height)
 
             page_tables = page.extract_tables()
 
@@ -1093,7 +1095,11 @@ def _find_table_for_page(all_tables: List[Dict], page_number: int) -> Dict | Non
     return sorted(page_tables, key=sort_key, reverse=True)[0]
 
 
-def _page_thumbnail_base64(file_path: Path, page_num: int, matrix_scale: float = 1.5) -> str:
+def _page_thumbnail_base64(
+    file_path: Path,
+    page_num: int,
+    matrix_scale: float = DETECT_TABLES_THUMB_SCALE,
+) -> str:
     doc = fitz.open(str(file_path))
     try:
         page = doc[page_num - 1]
@@ -1146,7 +1152,10 @@ def _pdfplumber_detect_options(
         )
 
     likely = [entry for score, entry in scored if score >= 18]
-    options = likely if likely else [entry for _, entry in sorted(scored, key=lambda x: -x[0])[:12]]
+    fallback_limit = min(12, DETECT_TABLES_MAX_CANDIDATES)
+    options = likely if likely else [entry for _, entry in sorted(scored, key=lambda x: -x[0])[:fallback_limit]]
+    if len(options) > DETECT_TABLES_MAX_CANDIDATES:
+        options = options[:DETECT_TABLES_MAX_CANDIDATES]
     if not likely and options:
         logger.warning(
             "detect-tables: nenhuma tabela com score alto; retornando %s melhores candidatos",

@@ -235,22 +235,40 @@ export const getOrcamentoTableCandidates = async (
 export const detectOrcamentoTables = async (uploadId: string) => {
   const formData = new FormData();
   formData.append("upload_id", uploadId);
-  try {
-    const response = await apiClient.post("/api/orcamentos/detect-tables", formData, {
-      headers: { "Content-Type": "multipart/form-data" },
-      timeout: 180000,
-    });
-    return response.data as OrcamentoTableDetectResponse;
-  } catch (error: any) {
-    const detail = error.response?.data?.detail;
-    const msg =
-      typeof detail === "string"
-        ? detail
-        : Array.isArray(detail)
-          ? detail.map((d: { msg?: string }) => d?.msg).join("; ")
-          : "Erro ao detectar tabelas";
-    throw new Error(msg || "Erro ao detectar tabelas");
+
+  await pingApiHealth();
+
+  let lastError: unknown;
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    try {
+      const response = await apiClient.post("/api/orcamentos/detect-tables", formData, {
+        headers: { "Content-Type": "multipart/form-data" },
+        timeout: 180000,
+      });
+      return response.data as OrcamentoTableDetectResponse;
+    } catch (error: unknown) {
+      lastError = error;
+      if (isRenderColdStartError(error) && attempt < 2) {
+        await sleep(5000);
+        await pingApiHealth(2);
+        continue;
+      }
+      break;
+    }
   }
+
+  const err = lastError as { response?: { data?: { detail?: unknown } } };
+  const detail = err.response?.data?.detail;
+  const msg =
+    typeof detail === "string"
+      ? detail
+      : Array.isArray(detail)
+        ? detail.map((d: { msg?: string }) => d?.msg).join("; ")
+        : parseApiError(
+            lastError,
+            "Erro ao detectar tabelas. O servidor pode ter ficado sem memória ao processar o PDF — tente um arquivo menor ou aguarde e tente novamente.",
+          );
+  throw new Error(msg || "Erro ao detectar tabelas");
 };
 
 export type AnaliticoFullPdfResult = {
