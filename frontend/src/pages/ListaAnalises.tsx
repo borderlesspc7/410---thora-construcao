@@ -135,7 +135,13 @@ export default function ListaAnalises() {
       map.set(job.upload_id, prev ? { ...prev, ...job } : job);
     }
 
-    const merged = sortJobsNewestFirst(Array.from(map.values()));
+    const merged = sortJobsNewestFirst(
+      Array.from(map.values()).filter(
+        (job) =>
+          job.status !== "not_found" &&
+          !job.message?.includes("não pertence"),
+      ),
+    );
     setJobs(merged);
     saveAbcAnalysisUploadIds(merged.map((j) => j.upload_id));
   }, []);

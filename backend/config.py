@@ -11,7 +11,7 @@ load_dotenv(BASE_DIR / ".env")
 load_dotenv()
 IS_VERCEL = os.getenv("VERCEL", "").strip().lower() in {"1", "true", "yes", "on"}
 IS_RENDER = os.getenv("RENDER", "").strip().lower() in {"1", "true", "yes", "on"}
-RUNTIME_BASE_DIR = Path("/tmp") if IS_VERCEL else BASE_DIR
+RUNTIME_BASE_DIR = Path("/tmp") if (IS_VERCEL or IS_RENDER) else BASE_DIR
 UPLOAD_FOLDER = RUNTIME_BASE_DIR / "uploads"
 TEMP_FOLDER = RUNTIME_BASE_DIR / "temp"
 CACHE_FOLDER = RUNTIME_BASE_DIR / "cache"
