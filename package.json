@@ -1,0 +1,12 @@
+{
+  "name": "thora-construcao",
+  "private": true,
+  "scripts": {
+    "dev": "concurrently -k -n front,back -c cyan,magenta \"npm run dev --prefix frontend\" \"npm run dev --prefix backend\"",
+    "setup": "npm install && npm install --prefix frontend && npm run setup --prefix backend",
+    "setup:backend": "npm run setup --prefix backend"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2"
+  }
+}

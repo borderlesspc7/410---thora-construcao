@@ -58,6 +58,16 @@ console.info(`🌐 API Base: ${API_BASE}`);
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
+/** Acorda o Render sem depender de CORS (GET simples via Image). */
+const wakeApiServer = (): void => {
+  const base = API_BASE.replace(/\/$/, "");
+  for (let i = 0; i < 3; i++) {
+    const img = new Image();
+    img.referrerPolicy = "no-referrer";
+    img.src = `${base}/health?wake=${Date.now()}-${i}`;
+  }
+};
+
 const isRenderColdStartError = (error: unknown): boolean => {
   const err = error as {
     response?: { status?: number };
@@ -73,8 +83,14 @@ const isRenderColdStartError = (error: unknown): boolean => {
 };
 
 /** Acorda o backend no Render (free tier dorme após inatividade). */
-export const pingApiHealth = async (maxAttempts = 12): Promise<boolean> => {
+export const pingApiHealth = async (maxAttempts = 15): Promise<boolean> => {
+  wakeApiServer();
+  await sleep(4000);
+
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    if (attempt > 1 && attempt % 3 === 0) {
+      wakeApiServer();
+    }
     try {
       const response = await apiClient.get("/health", { timeout: 60000 });
       if (response.data?.status === "online") {
@@ -97,7 +113,7 @@ export const ensureApiReady = async (): Promise<void> => {
 
   throw new Error(
     "Servidor da API ainda está iniciando (Render free tier dorme após ~15 min). " +
-      "Aguarde cerca de 1 minuto, abra https://four10-thora-construcao.onrender.com/health no navegador " +
+      `Aguarde cerca de 1 minuto, abra ${API_BASE.replace(/\/$/, "")}/health no navegador ` +
       "até ver status online e tente novamente.",
   );
 };

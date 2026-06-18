@@ -21,6 +21,7 @@ from config import (
     FRONTEND_URLS,
     CORS_ORIGIN_REGEX,
     IS_VERCEL,
+    IS_RENDER,
     API_TITLE,
     API_VERSION,
     API_DESCRIPTION,
@@ -33,6 +34,7 @@ from config import (
     DETECT_TABLES_CACHE_VERSION,
     DETECT_TABLES_MAX_PAGES,
     DETECT_TABLES_THUMB_SCALE,
+    DISABLE_CAMELOT,
     ENVIRONMENT,
     GEMINI_API_KEY,
     GEMINI_MODEL,
@@ -402,15 +404,70 @@ def _resolve_uid_from_bearer_token(token: str) -> str | None:
         decoded = firebase_auth.verify_id_token(token)
         uid = decoded.get("uid")
         return str(uid) if uid else None
-    except Exception:
-        if ENVIRONMENT == "development":
-            return _decode_firebase_uid_from_jwt(token)
+    except Exception as exc:
+        # Fallback: extrai UID do JWT quando verify falha (ex.: credenciais Admin
+        # mal formatadas no Render). Mantém o mesmo usuário em todas as requisições.
+        fallback_uid = _decode_firebase_uid_from_jwt(token)
+        if fallback_uid:
+            logger.warning(
+                "⚠️ verify_id_token falhou (%s); usando UID do JWT sem verificação",
+                exc,
+            )
+            return fallback_uid
         return None
 
 
-def _assert_upload_access(user_id: str, expected_user: str | None) -> None:
+def _reconcile_upload_owner(upload_id: str, user_id: str) -> str | None:
+    """Alinha userId do upload ao usuário autenticado (ex.: anon → Firebase UID)."""
+    meta = _load_upload_meta(upload_id) or {}
+    expected = meta.get("userId")
+
+    if expected and str(expected) == str(user_id):
+        return str(user_id)
+
+    if (
+        expected
+        and str(expected).startswith("anon-")
+        and not str(user_id).startswith("anon-")
+    ):
+        meta["userId"] = user_id
+        _save_upload_meta(upload_id, meta)
+        logger.info(
+            "userId reconciliado (anon→auth): %s %s → %s",
+            upload_id,
+            expected,
+            user_id,
+        )
+        return str(user_id)
+
+    job = get_abc_job(upload_id)
+    if job and str(job.get("user_id")) == str(user_id):
+        if not expected or str(expected) != str(user_id):
+            meta["userId"] = user_id
+            meta.setdefault("filename", job.get("filename"))
+            meta.setdefault("uploadId", upload_id)
+            _save_upload_meta(upload_id, meta)
+            logger.info("userId reconciliado via job ABC: %s", upload_id)
+        return str(user_id)
+
+    return str(expected) if expected else None
+
+
+def _assert_upload_access(
+    user_id: str,
+    expected_user: str | None,
+    *,
+    upload_id: str | None = None,
+) -> None:
     """Garante que o usuário autenticado pode acessar o upload."""
+    if upload_id:
+        expected_user = _reconcile_upload_owner(upload_id, user_id) or expected_user
+
     if not expected_user:
+        if upload_id:
+            job = get_abc_job(upload_id)
+            if job and str(job.get("user_id")) == str(user_id):
+                return
         if ENVIRONMENT != "development":
             raise HTTPException(status_code=403, detail="Acesso negado")
         return
@@ -472,7 +529,7 @@ def _assert_project_access(project_id: str, user_id: str) -> None:
     """Valida upload_id e permissão de acesso ao projeto."""
     project_id = _validate_upload_id(project_id)
     meta = _load_upload_meta(project_id)
-    _assert_upload_access(user_id, meta.get("userId"))
+    _assert_upload_access(user_id, meta.get("userId"), upload_id=project_id)
 
 
 def _meta_path_for_upload_id(upload_id: str) -> Path:
@@ -1475,14 +1532,23 @@ async def _resolve_pdf_bytes_for_upload(upload_id: str, user_id: str) -> bytes:
         return file_path.read_bytes()
 
     meta = _load_upload_meta(upload_id)
-    owner = meta.get("userId") or user_id
-    cloud_bytes = await download_pdf_bytes_async(upload_id=upload_id, user_id=owner)
-    if cloud_bytes:
-        try:
-            file_path.write_bytes(cloud_bytes)
-        except OSError as exc:
-            logger.warning("Não foi possível cachear PDF localmente: %s", exc)
-        return cloud_bytes
+    owner_candidates: list[str] = []
+    for candidate in (
+        meta.get("userId"),
+        user_id,
+        (get_abc_job(upload_id) or {}).get("user_id"),
+    ):
+        if candidate and str(candidate) not in owner_candidates:
+            owner_candidates.append(str(candidate))
+
+    for owner in owner_candidates:
+        cloud_bytes = await download_pdf_bytes_async(upload_id=upload_id, user_id=owner)
+        if cloud_bytes:
+            try:
+                file_path.write_bytes(cloud_bytes)
+            except OSError as exc:
+                logger.warning("Não foi possível cachear PDF localmente: %s", exc)
+            return cloud_bytes
 
     raise HTTPException(
         status_code=404,
@@ -1723,15 +1789,17 @@ async def upload_pdf(
             },
         )
 
-        asyncio.create_task(
-            _cloud_upload_pdf_background(
-                upload_id,
-                user_id,
-                contents,
-                file.filename or f"{upload_id}.pdf",
-                size_bytes=len(contents),
-            )
+        cloud_upload = _cloud_upload_pdf_background(
+            upload_id,
+            user_id,
+            contents,
+            file.filename or f"{upload_id}.pdf",
+            size_bytes=len(contents),
         )
+        if ENVIRONMENT == "production" or IS_RENDER:
+            await cloud_upload
+        else:
+            asyncio.create_task(cloud_upload)
 
         logger.info(f"✅ PDF salvo: {file_path} ({len(contents) / 1024 / 1024:.2f}MB)")
 
@@ -1792,7 +1860,7 @@ async def extract_pdf(
 
         meta = _load_upload_meta(upload_id)
         expected_user = meta.get("userId")
-        _assert_upload_access(user_id, expected_user)
+        _assert_upload_access(user_id, expected_user, upload_id=upload_id)
         filename = str(meta.get("filename") or file_path.name)
 
         try:
@@ -1956,6 +2024,12 @@ def _detect_table_options_sync(file_path: Path) -> Tuple[List[Dict[str, Any]], b
         logger.info("detect-tables: %s candidato(s) via pdfplumber", len(options))
         return options, False
 
+    if DISABLE_CAMELOT:
+        logger.warning(
+            "detect-tables: pdfplumber vazio e Camelot desativado (DISABLE_CAMELOT)"
+        )
+        return [], False
+
     logger.info("detect-tables: pdfplumber vazio — tentando Camelot (máx. %s págs)", DETECT_TABLES_MAX_PAGES)
     try:
         options = _camelot_detect_options(file_path)
@@ -1979,7 +2053,7 @@ async def detect_orcamento_tables(
 
     meta = _load_upload_meta(upload_id)
     expected_user = meta.get("userId")
-    _assert_upload_access(user_id, expected_user)
+    _assert_upload_access(user_id, expected_user, upload_id=upload_id)
 
     upload_data = _get_upload_data_from_sources(upload_id) or {}
     cached_options = upload_data.get("table_candidates") or []
@@ -2027,7 +2101,7 @@ async def get_orcamento_table_candidates(
     """Retorna tabelas já detectadas (cache) sem reprocessar o PDF."""
     upload_id = _validate_upload_id(upload_id)
     meta = _load_upload_meta(upload_id)
-    _assert_upload_access(user_id, meta.get("userId"))
+    _assert_upload_access(user_id, meta.get("userId"), upload_id=upload_id)
 
     upload_data = _get_upload_data_from_sources(upload_id) or {}
     options = upload_data.get("table_candidates") or []
@@ -2103,7 +2177,7 @@ async def process_orcamento_confirmed(
     """
     upload_id = _validate_upload_id(payload.upload_id)
     meta = _load_upload_meta(upload_id)
-    _assert_upload_access(user_id, meta.get("userId"))
+    _assert_upload_access(user_id, meta.get("userId"), upload_id=upload_id)
 
     ids_to_process = payload.table_ids
     if not ids_to_process and payload.table_id:
@@ -2127,7 +2201,7 @@ async def _execute_process_confirmed(
 
     meta = _load_upload_meta(upload_id)
     expected_user = meta.get("userId")
-    _assert_upload_access(user_id, expected_user)
+    _assert_upload_access(user_id, expected_user, upload_id=upload_id)
 
     filename = str(meta.get("filename") or file_path.name)
 
@@ -2561,7 +2635,7 @@ async def abc_batch_register(
     for item in payload.jobs:
         upload_id = _validate_upload_id(item.upload_id)
         meta = _load_upload_meta(upload_id)
-        _assert_upload_access(user_id, meta.get("userId"))
+        _assert_upload_access(user_id, meta.get("userId"), upload_id=upload_id)
         job = init_abc_job(
             upload_id,
             user_id=user_id,
@@ -2582,7 +2656,7 @@ async def abc_update_job_status(
     """Atualiza status de um job ABC (ex.: após detect-tables no frontend)."""
     upload_id = _validate_upload_id(upload_id)
     meta = _load_upload_meta(upload_id)
-    _assert_upload_access(user_id, meta.get("userId"))
+    _assert_upload_access(user_id, meta.get("userId"), upload_id=upload_id)
 
     job = get_abc_job(upload_id)
     if not job:
@@ -2626,7 +2700,7 @@ async def abc_enqueue_process(
     """Enfileira processamento IA após seleção de tabelas."""
     upload_id = _validate_upload_id(payload.upload_id)
     meta = _load_upload_meta(upload_id)
-    _assert_upload_access(user_id, meta.get("userId"))
+    _assert_upload_access(user_id, meta.get("userId"), upload_id=upload_id)
 
     file_path = UPLOAD_FOLDER / f"{upload_id}.pdf"
     if not file_path.is_file():
@@ -2663,7 +2737,7 @@ async def abc_job_status(
 ):
     upload_id = _validate_upload_id(upload_id)
     meta = _load_upload_meta(upload_id)
-    _assert_upload_access(user_id, meta.get("userId"))
+    _assert_upload_access(user_id, meta.get("userId"), upload_id=upload_id)
     return _build_abc_job_status(upload_id)
 
 
@@ -2676,7 +2750,7 @@ async def abc_batch_status(
     for raw_id in payload.upload_ids:
         upload_id = _validate_upload_id(raw_id)
         meta = _load_upload_meta(upload_id)
-        _assert_upload_access(user_id, meta.get("userId"))
+        _assert_upload_access(user_id, meta.get("userId"), upload_id=upload_id)
         jobs.append(_build_abc_job_status(upload_id))
     return {"status": "success", "jobs": jobs}
 
@@ -2785,7 +2859,7 @@ def _enqueue_single_analitico(
     file_path = UPLOAD_FOLDER / f"{upload_id}.pdf"
     meta = _load_upload_meta(upload_id)
     expected_user = meta.get("userId")
-    _assert_upload_access(user_id, expected_user)
+    _assert_upload_access(user_id, expected_user, upload_id=upload_id)
 
     if not file_path.is_file() and not meta.get("storageUrl"):
         raise HTTPException(status_code=404, detail=f"Upload não encontrado: {upload_id}")
@@ -2880,7 +2954,7 @@ async def process_analitico_full_batch_status(
         upload_id = _validate_upload_id(raw_id)
         meta = _load_upload_meta(upload_id)
         expected_user = meta.get("userId")
-        _assert_upload_access(user_id, expected_user)
+        _assert_upload_access(user_id, expected_user, upload_id=upload_id)
         jobs.append(_build_analitico_job_status(upload_id))
     return {"status": "success", "jobs": jobs}
 
@@ -2894,7 +2968,7 @@ async def process_analitico_full_status(
     upload_id = _validate_upload_id(upload_id)
     meta = _load_upload_meta(upload_id)
     expected_user = meta.get("userId")
-    _assert_upload_access(user_id, expected_user)
+    _assert_upload_access(user_id, expected_user, upload_id=upload_id)
 
     status_payload = _build_analitico_job_status(upload_id)
     if status_payload.get("status") == "not_found":
@@ -2976,7 +3050,7 @@ async def analyze_with_ai(
             )
 
         expected_user = upload_data.get("userId")
-        _assert_upload_access(user_id, expected_user)
+        _assert_upload_access(user_id, expected_user, upload_id=upload_id)
 
         tables_text = _build_tables_text_for_ai(upload_data)
         if not tables_text.strip():
@@ -3995,7 +4069,7 @@ async def get_orcamento_pdf(
     upload_id = _validate_upload_id(upload_id)
     meta = _load_upload_meta(upload_id)
     owner = meta.get("userId")
-    _assert_upload_access(user_id, owner)
+    _assert_upload_access(user_id, owner, upload_id=upload_id)
 
     file_path = UPLOAD_FOLDER / f"{upload_id}.pdf"
     if not file_path.is_file():
@@ -4062,7 +4136,7 @@ async def get_orcamento(
         upload_data = _get_upload_data_from_sources(upload_id)
         meta = _load_upload_meta(upload_id)
         owner = meta.get("userId") or (upload_data or {}).get("userId")
-        _assert_upload_access(user_id, owner)
+        _assert_upload_access(user_id, owner, upload_id=upload_id)
 
         if not upload_data:
             raise HTTPException(
@@ -4243,7 +4317,7 @@ async def get_curva_abc(
             )
             if orcamento:
                 expected_user = orcamento.get("userId")
-                _assert_upload_access(user_id, expected_user)
+                _assert_upload_access(user_id, expected_user, upload_id=upload_id)
         
         if not orcamento:
             raise HTTPException(

@@ -32,9 +32,31 @@ const analytics =
 // Firebase Auth (protects backend endpoints)
 const auth = getAuth(app);
 
+/** Aguarda Firebase Auth resolver a sessão (evita upload com usuário anônimo). */
+export const waitForAuthReady = (timeoutMs = 8000): Promise<void> =>
+  new Promise((resolve) => {
+    if (auth.currentUser) {
+      resolve();
+      return;
+    }
+
+    let settled = false;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      unsubscribe();
+      resolve();
+    };
+
+    const unsubscribe = auth.onAuthStateChanged(() => finish());
+    const timer = window.setTimeout(finish, timeoutMs);
+  });
+
 export const ensureAuthToken = async (): Promise<string> => {
+  await waitForAuthReady();
   if (!auth.currentUser) return "";
-  return auth.currentUser.getIdToken();
+  return auth.currentUser.getIdToken(true);
 };
 
 // ==================== INTERFACES ====================

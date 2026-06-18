@@ -1,6 +1,7 @@
 import { useEffect, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import { toast } from "sonner";
+import { pingApiHealth } from "../../services/api";
 import { getAbcBatchStatus, type AbcAnalysisJob } from "../../services/abcAnalysis";
 import {
   loadActiveAbcJobs,
@@ -9,11 +10,12 @@ import {
   wasAbcJobNotified,
 } from "./abcBackgroundJobs";
 
-const POLL_MS = 2500;
+const POLL_MS = 5000;
 
 export function useAbcBackgroundPoller(): void {
   const navigate = useNavigate();
   const pollingRef = useRef(false);
+  const slowPollRef = useRef(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -25,6 +27,13 @@ export function useAbcBackgroundPoller(): void {
 
       pollingRef.current = true;
       try {
+        const apiUp = await pingApiHealth(slowPollRef.current ? 6 : 3);
+        if (!apiUp || cancelled) {
+          slowPollRef.current = true;
+          return;
+        }
+        slowPollRef.current = false;
+
         const jobs = (await getAbcBatchStatus(uploadIds)) ?? [];
         if (cancelled) return;
 
@@ -40,7 +49,7 @@ export function useAbcBackgroundPoller(): void {
           return;
         }
       } catch {
-        /* rede instável — tenta no próximo ciclo */
+        slowPollRef.current = true;
       } finally {
         pollingRef.current = false;
       }

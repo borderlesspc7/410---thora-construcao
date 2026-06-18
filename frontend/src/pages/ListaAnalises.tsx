@@ -7,6 +7,7 @@ import { TableSelector, type MockTableOption } from "../components/TableSelector
 import { btnPrimary, btnMuted } from "../components/ui/buttonClasses";
 import {
   detectOrcamentoTables,
+  ensureApiReady,
   getOrcamentoTableCandidates,
   uploadPDF,
   type OrcamentoTableCandidate,
@@ -26,7 +27,7 @@ import {
   saveAbcAnalysisUploadIds,
 } from "../features/abc/abcSession";
 
-const POLL_MS = 2000;
+const POLL_MS = 5000;
 
 type LocationState = {
   pendingFiles?: File[];
@@ -114,7 +115,17 @@ export default function ListaAnalises() {
       return;
     }
 
-    const batch = (await getAbcBatchStatus(allIds)) ?? [];
+    let batch: AbcAnalysisJob[] = [];
+    try {
+      batch = (await getAbcBatchStatus(allIds)) ?? [];
+    } catch (error: unknown) {
+      const status = (error as { response?: { status?: number } }).response?.status;
+      if (status === 403 || status === 401) {
+        saveAbcAnalysisUploadIds(list.map((j) => j.upload_id));
+      }
+      if (list.length === 0) throw error;
+    }
+
     const map = new Map<string, AbcAnalysisJob>();
     for (const job of list) {
       map.set(job.upload_id, job);
@@ -124,7 +135,13 @@ export default function ListaAnalises() {
       map.set(job.upload_id, prev ? { ...prev, ...job } : job);
     }
 
-    const merged = sortJobsNewestFirst(Array.from(map.values()));
+    const merged = sortJobsNewestFirst(
+      Array.from(map.values()).filter(
+        (job) =>
+          job.status !== "not_found" &&
+          !job.message?.includes("não pertence"),
+      ),
+    );
     setJobs(merged);
     saveAbcAnalysisUploadIds(merged.map((j) => j.upload_id));
   }, []);
@@ -168,6 +185,8 @@ export default function ListaAnalises() {
 
   const bootstrapPendingFiles = useCallback(
     async (files: File[]) => {
+      await ensureApiReady();
+
       const initialJobs: AbcAnalysisJob[] = files.map((file, index) => ({
         upload_id: `pending-${index}`,
         filename: file.name,
@@ -176,17 +195,13 @@ export default function ListaAnalises() {
       }));
       setJobs(initialJobs);
 
-      const uploadResults = await Promise.all(
-        files.map(async (file) => {
-          const response = await uploadPDF(file);
-          const uploadId = response.upload_id as string;
-          appendAbcAnalysisUploadId(uploadId);
-          return {
-            uploadId,
-            filename: file.name,
-          };
-        }),
-      );
+      const uploadResults: { uploadId: string; filename: string }[] = [];
+      for (const file of files) {
+        const response = await uploadPDF(file);
+        const uploadId = response.upload_id as string;
+        appendAbcAnalysisUploadId(uploadId);
+        uploadResults.push({ uploadId, filename: file.name });
+      }
 
       const registered = (await registerAbcBatch(uploadResults)) ?? [];
       const uploadIds = uploadResults.map((r) => r.uploadId);
@@ -202,9 +217,9 @@ export default function ListaAnalises() {
             })),
       );
 
-      await Promise.all(
-        uploadResults.map((item) => runDetectForUpload(item.uploadId, item.filename)),
-      );
+      for (const item of uploadResults) {
+        await runDetectForUpload(item.uploadId, item.filename);
+      }
       await refreshJobs(uploadIds);
     },
     [refreshJobs, runDetectForUpload],

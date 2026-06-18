@@ -1,8 +1,13 @@
-const SESSION_KEY = "abc-analysis-upload-ids";
+import { getAuth } from "firebase/auth";
+
+function sessionKey(): string {
+  const uid = getAuth().currentUser?.uid ?? "anonymous";
+  return `abc-analysis-upload-ids-${uid}`;
+}
 
 export function loadAbcAnalysisUploadIds(): string[] {
   try {
-    const raw = sessionStorage.getItem(SESSION_KEY);
+    const raw = sessionStorage.getItem(sessionKey());
     if (!raw) return [];
     const parsed = JSON.parse(raw) as unknown;
     return Array.isArray(parsed) ? parsed.filter((id) => typeof id === "string") : [];
@@ -13,7 +18,7 @@ export function loadAbcAnalysisUploadIds(): string[] {
 
 export function saveAbcAnalysisUploadIds(ids: string[]): void {
   const unique = [...new Set(ids.filter((id) => id && !id.startsWith("pending-")))];
-  sessionStorage.setItem(SESSION_KEY, JSON.stringify(unique));
+  sessionStorage.setItem(sessionKey(), JSON.stringify(unique));
 }
 
 export function appendAbcAnalysisUploadId(uploadId: string): void {

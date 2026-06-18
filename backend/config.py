@@ -10,7 +10,8 @@ load_dotenv(BASE_DIR.parent / ".env")
 load_dotenv(BASE_DIR / ".env")
 load_dotenv()
 IS_VERCEL = os.getenv("VERCEL", "").strip().lower() in {"1", "true", "yes", "on"}
-RUNTIME_BASE_DIR = Path("/tmp") if IS_VERCEL else BASE_DIR
+IS_RENDER = os.getenv("RENDER", "").strip().lower() in {"1", "true", "yes", "on"}
+RUNTIME_BASE_DIR = Path("/tmp") if (IS_VERCEL or IS_RENDER) else BASE_DIR
 UPLOAD_FOLDER = RUNTIME_BASE_DIR / "uploads"
 TEMP_FOLDER = RUNTIME_BASE_DIR / "temp"
 CACHE_FOLDER = RUNTIME_BASE_DIR / "cache"
@@ -112,17 +113,25 @@ FIREBASE_STORAGE_BUCKET = os.getenv(
 )
 
 # Detecção de tabelas em PDF (limite de páginas para pdfplumber/Camelot)
-_default_detect_pages = "20" if ENVIRONMENT == "production" else "60"
+_default_detect_pages = "10" if IS_RENDER else ("20" if ENVIRONMENT == "production" else "60")
 DETECT_TABLES_MAX_PAGES = int(os.getenv("DETECT_TABLES_MAX_PAGES", _default_detect_pages))
 DETECT_TABLES_MAX_CANDIDATES = int(os.getenv("DETECT_TABLES_MAX_CANDIDATES", "20"))
 DETECT_TABLES_THUMB_SCALE = float(os.getenv("DETECT_TABLES_THUMB_SCALE", "1.0"))
 DETECT_TABLES_CACHE_VERSION = int(os.getenv("DETECT_TABLES_CACHE_VERSION", "2"))
+# Camelot + OpenCV consomem muita RAM — no Render free tier costuma derrubar o worker (502).
+_default_disable_camelot = "true" if IS_RENDER else "false"
+DISABLE_CAMELOT = os.getenv("DISABLE_CAMELOT", _default_disable_camelot).lower() in (
+    "1",
+    "true",
+    "yes",
+    "on",
+)
 
 # Redis / Celery (fila persistente de Orçamento Analítico)
 REDIS_URL = os.getenv("REDIS_URL", "").strip()
 CELERY_BROKER_URL = os.getenv("CELERY_BROKER_URL", REDIS_URL).strip()
 CELERY_RESULT_BACKEND = os.getenv("CELERY_RESULT_BACKEND", REDIS_URL).strip()
-_default_use_celery = "false" if IS_VERCEL else "true"
+_default_use_celery = "false" if (IS_VERCEL or IS_RENDER) else "true"
 USE_CELERY_QUEUE = os.getenv("USE_CELERY_QUEUE", _default_use_celery).lower() in (
     "1",
     "true",
