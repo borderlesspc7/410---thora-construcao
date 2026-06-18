@@ -598,6 +598,66 @@ export const getOrcamento = async (uploadId: string) => {
   }
 };
 
+export type OrcamentoProcessResult = {
+  upload_id?: string;
+  filename?: string;
+  items?: unknown[];
+  structured_items?: unknown[];
+  hierarchical_items?: unknown[];
+  tables?: unknown[];
+  resumo?: unknown;
+  ia_metadata?: unknown;
+  has_orcamento_cache?: boolean;
+  items_found?: number;
+};
+
+/** Job ABC retorna resumo compacto — busca itens completos no backend quando necessário. */
+export async function resolveOrcamentoProcessResult(
+  uploadId: string,
+  partial: OrcamentoProcessResult,
+): Promise<OrcamentoProcessResult> {
+  const inlineItems =
+    (Array.isArray(partial.items) && partial.items.length > 0) ||
+    (Array.isArray(partial.hierarchical_items) &&
+      partial.hierarchical_items.length > 0) ||
+    (Array.isArray(partial.structured_items) && partial.structured_items.length > 0);
+
+  if (inlineItems) {
+    return partial;
+  }
+
+  const shouldFetch =
+    partial.has_orcamento_cache ||
+    (typeof partial.items_found === "number" && partial.items_found > 0);
+
+  if (!shouldFetch) {
+    return partial;
+  }
+
+  const data = await getOrcamento(uploadId);
+  const orc = (data as { orcamento?: Record<string, unknown> }).orcamento ?? data;
+  const itemsData = (orc.itemsData as Record<string, unknown> | undefined) ?? {};
+
+  return {
+    ...partial,
+    upload_id: uploadId,
+    filename: (orc.filename as string | undefined) ?? partial.filename,
+    items: (orc.items as unknown[]) ?? (itemsData.items as unknown[]) ?? [],
+    structured_items:
+      (itemsData.items as unknown[]) ?? (orc.items as unknown[]) ?? [],
+    hierarchical_items:
+      (orc.hierarchical_items as unknown[]) ??
+      (itemsData.hierarchical_items as unknown[]) ??
+      [],
+    tables: (orc.tables as unknown[]) ?? [],
+    resumo: (itemsData.resumo as unknown) ?? (orc.resumo as unknown) ?? partial.resumo,
+    ia_metadata:
+      (orc.ia_metadata as unknown) ??
+      (orc.iaMetadata as unknown) ??
+      partial.ia_metadata,
+  };
+}
+
 // ==================== CURVA ABC OPERATIONS ====================
 
 // Buscar dados da Curva ABC

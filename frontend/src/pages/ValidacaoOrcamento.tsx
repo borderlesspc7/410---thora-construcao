@@ -385,11 +385,10 @@ export default function ValidacaoOrcamento() {
         return;
       }
 
-      if (flowState?.extractedData) {
+      const extractedTables = flowState?.extractedData as ExtractedTable[] | undefined;
+      if (Array.isArray(extractedTables) && extractedTables.length > 0) {
         try {
-          const parsedItems = parseExtractedTables(
-            flowState.extractedData as ExtractedTable[],
-          );
+          const parsedItems = parseExtractedTables(extractedTables);
           setItems(applyAbcToItems(parsedItems));
         } catch {
           setLoadError("Erro ao processar dados extraídos do PDF");

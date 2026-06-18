@@ -2182,9 +2182,29 @@ async def _execute_process_confirmed(
     pdf_bytes = file_path.read_bytes()
     tables_out = []
 
+    tables_total = len([t for t in ids_to_process if t])
+    update_abc_job(
+        upload_id,
+        pages_total=tables_total,
+        pages_done=0,
+        message=(
+            f"Preparando análise de {tables_total} tabela(s)…"
+            if tables_total
+            else "IA analisando tabelas…"
+        ),
+    )
+
+    table_index = 0
     for t_id in ids_to_process:
         if not t_id:
             continue
+
+        update_abc_job(
+            upload_id,
+            pages_done=table_index,
+            pages_total=tables_total,
+            message=f"IA analisando tabela {table_index + 1} de {tables_total}…",
+        )
             
         selected_candidate = next(
             (item for item in table_candidates if item.get("id") == t_id),
@@ -2355,6 +2375,14 @@ async def _execute_process_confirmed(
                     "provider": provider_used,
                     "resumo": resumo_this,
                 })
+
+            table_index += 1
+            update_abc_job(
+                upload_id,
+                pages_done=table_index,
+                pages_total=tables_total,
+                message=f"Tabela {table_index} de {tables_total} concluída…",
+            )
             
         except OpenAIServiceError as exc:
             logger.warning(f"Erro ao processar tabela {t_id}: {exc}")

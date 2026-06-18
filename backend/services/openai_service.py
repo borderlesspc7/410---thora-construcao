@@ -451,7 +451,7 @@ async def _extract_with_openai_vision(
 ) -> Tuple[List[Dict[str, Any]], Dict[str, Any], str]:
     """Executa extração estruturada com imagem + texto de apoio."""
     response = await client.chat.completions.create(
-        model="gpt-4o-2024-08-06",
+        model=OPENAI_ORCAMENTO_MODEL,
         temperature=0.0,
         max_tokens=8192,
         response_format={"type": "json_schema", "json_schema": EXTRACTION_JSON_SCHEMA},
@@ -850,7 +850,7 @@ async def process_selected_table(
             })
 
         response = await client.chat.completions.create(
-            model="gpt-4o-2024-08-06",
+            model=OPENAI_ORCAMENTO_MODEL,
             temperature=0.0,
             max_tokens=8192,
             response_format={"type": "json_schema", "json_schema": EXTRACTION_JSON_SCHEMA},
@@ -1093,7 +1093,7 @@ async def _extract_analitico_from_page(
         messages.append({"role": "user", "content": user_text})
 
     response = await client.chat.completions.create(
-        model="gpt-4o-2024-08-06",
+        model=OPENAI_ORCAMENTO_MODEL,
         temperature=0.0,
         max_tokens=8192,
         response_format={"type": "json_schema", "json_schema": EXTRACTION_JSON_SCHEMA},
@@ -1303,25 +1303,41 @@ async def process_full_pdf_analitico(
                 pdf_content, max_pages=max_pages
             )
         rescan_total = len(rescan_candidates)
+        combined_total = total_pages + rescan_total
         _emit_progress(
             progress_callback,
             {
                 "phase": "processing",
-                "pages_total": rescan_total,
-                "pages_done": 0,
-                "message": f"Varredura ampla em {rescan_total} página(s)…",
+                "pages_total": combined_total,
+                "pages_done": total_pages,
+                "message": f"Varredura ampla em {rescan_total} página(s) adicional(is)…",
             },
         )
         for r_index, candidate in enumerate(rescan_candidates):
             page_num = candidate.page_number
             if r_index > 0 and _ANALITICO_PAGE_DELAY_SECONDS > 0:
                 await asyncio.sleep(_ANALITICO_PAGE_DELAY_SECONDS)
+
+            progress_done = total_pages + r_index
+            _emit_progress(
+                progress_callback,
+                {
+                    "phase": "processing",
+                    "pages_total": combined_total,
+                    "pages_done": progress_done,
+                    "current_page": page_num,
+                    "message": (
+                        f"Varredura ampla: página {page_num} "
+                        f"({progress_done + 1}/{combined_total})…"
+                    ),
+                },
+            )
             try:
                 page_items = await _extract_analitico_page_with_retries(
                     client,
                     pdf_content=pdf_content,
                     page_number=page_num,
-                    total_pages=rescan_total,
+                    total_pages=combined_total,
                 )
                 for item in page_items:
                     item["_source_page"] = page_num
@@ -1332,6 +1348,19 @@ async def process_full_pdf_analitico(
                         "items": len(page_items),
                         "pass": "broad_rescan",
                     }
+                )
+                _emit_progress(
+                    progress_callback,
+                    {
+                        "phase": "processing",
+                        "pages_total": combined_total,
+                        "pages_done": total_pages + r_index + 1,
+                        "current_page": page_num,
+                        "message": (
+                            f"Varredura ampla concluída: página {page_num} "
+                            f"({total_pages + r_index + 1}/{combined_total})"
+                        ),
+                    },
                 )
             except Exception as exc:
                 logger.warning("Varredura ampla pág %s: %s", page_num, exc)

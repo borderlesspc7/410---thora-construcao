@@ -111,11 +111,15 @@ def mark_abc_job_started(upload_id: str) -> None:
         except Exception as exc:
             logger.warning("Erro ao remover %s da fila ABC: %s", upload_id, exc)
 
+    job = get_job(upload_id) or {}
+    tables_total = len(job.get("table_ids") or [])
     update_job(
         upload_id,
         status="processing",
         message="IA analisando tabelas e montando Curva ABC…",
         queue_position=0,
+        pages_total=tables_total,
+        pages_done=0,
     )
     _refresh_queue_positions()
 
@@ -126,6 +130,8 @@ def _enqueue_memory(job: AbcQueueJob) -> int:
         job.upload_id,
         status="queued",
         table_ids=job.table_ids,
+        pages_total=len(job.table_ids),
+        pages_done=0,
         message=f"Na fila de processamento (posição {position})…",
         queue_position=position,
     )
@@ -150,6 +156,8 @@ def _enqueue_celery(job: AbcQueueJob) -> int:
         job.upload_id,
         status="queued",
         table_ids=job.table_ids,
+        pages_total=len(job.table_ids),
+        pages_done=0,
         message=f"Na fila de processamento (posição {position})…",
         queue_position=position,
     )

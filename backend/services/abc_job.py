@@ -49,6 +49,8 @@ def init_job(
         "queue_position": queue_position,
         "tables_found": 0,
         "items_found": 0,
+        "pages_total": 0,
+        "pages_done": 0,
         "table_ids": [],
         "result": None,
         "error": None,
@@ -82,11 +84,15 @@ def _compact_job_result(result: Dict[str, Any]) -> Dict[str, Any]:
 
 def complete_job(upload_id: str, result: Dict[str, Any]) -> None:
     items_found = int(result.get("items_found") or 0)
+    job = _get_job(upload_id) or {}
+    pages_total = int(job.get("pages_total") or result.get("tables_found") or 0)
     update_job(
         upload_id,
         status="completed",
         result=_compact_job_result(result),
         items_found=items_found,
+        pages_total=pages_total,
+        pages_done=pages_total,
         completed_at=datetime.now().isoformat(),
         message=f"Análise concluída — {items_found} item(ns). Clique para abrir.",
         queue_position=0,

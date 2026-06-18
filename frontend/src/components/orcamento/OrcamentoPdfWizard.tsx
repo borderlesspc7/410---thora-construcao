@@ -10,6 +10,7 @@ import {
   detectOrcamentoTables,
   processAnaliticoFullBatch,
   processAnaliticoFullPdf,
+  resolveOrcamentoProcessResult,
   uploadPDF,
   type AnaliticoBatchJobStatus,
   type AnaliticoFullPdfResult,
@@ -59,6 +60,25 @@ type FlowPhase =
 type WizardMode = "table_selection" | "full_pdf";
 
 const MAX_BATCH_PDF_FILES = 20;
+
+function computeProgressPercent(done: number, total: number): number {
+  if (total <= 0) return 0;
+  return Math.min(100, Math.round((done / total) * 100));
+}
+
+function aggregateBatchProgress(jobs: AnaliticoBatchJobStatus[]): number {
+  let total = 0;
+  let done = 0;
+  for (const job of jobs) {
+    const jobTotal = job.pages_total ?? 0;
+    if (jobTotal <= 0) continue;
+    const jobDone =
+      job.status === "completed" ? jobTotal : (job.pages_done ?? 0);
+    total += jobTotal;
+    done += jobDone;
+  }
+  return computeProgressPercent(done, total);
+}
 
 function getWizardStep(phase: FlowPhase, mode: WizardMode): number {
   if (mode === "full_pdf") {
@@ -242,20 +262,25 @@ export function OrcamentoPdfWizard({
     tableIds: string[] = [],
     previews: OrcamentoWizardResult["selectedTablePreviews"] = [],
   ) => {
+    const resolved = await resolveOrcamentoProcessResult(
+      currentUploadId,
+      result as Parameters<typeof resolveOrcamentoProcessResult>[1],
+    );
+
     const hierarchicalItems =
-      result.hierarchical_items ?? result.structured_items ?? result.items ?? [];
-    const structuredItems = result.structured_items ?? result.items ?? [];
+      resolved.hierarchical_items ?? resolved.structured_items ?? resolved.items ?? [];
+    const structuredItems = resolved.structured_items ?? resolved.items ?? [];
 
     await onComplete({
-      uploadId: (result.upload_id as string) ?? currentUploadId,
+      uploadId: (resolved.upload_id as string) ?? currentUploadId,
       file: sourceFile,
       selectedTableIds: tableIds,
       selectedTablePreviews: previews,
-      extractedData: result.tables ?? [],
+      extractedData: resolved.tables ?? [],
       hierarchicalItems,
       structuredItems,
-      resumo: result.resumo,
-      iaMetadata: result.ia_metadata,
+      resumo: resolved.resumo,
+      iaMetadata: resolved.ia_metadata,
     });
   }, [onComplete]);
 
@@ -275,16 +300,24 @@ export function OrcamentoPdfWizard({
         if (!job) return;
 
         if (job.status === "queued" || job.status === "processing") {
+          const total = job.pages_total ?? job.table_ids?.length ?? 0;
+          const done = job.pages_done ?? 0;
+          if (total > 0) {
+            setProgressPercent(computeProgressPercent(done, total));
+          }
           setProcessingDetail(
             job.message ??
-              (job.queue_position
-                ? `Na fila (posição ${job.queue_position})…`
-                : "IA analisando tabelas…"),
+              (total > 0
+                ? `IA analisando tabela ${Math.min(done + 1, total)} de ${total}…`
+                : job.queue_position
+                  ? `Na fila (posição ${job.queue_position})…`
+                  : "IA analisando tabelas…"),
           );
           return;
         }
 
         if (job.status === "completed" && job.result) {
+          setProgressPercent(100);
           markAbcJobNotified(uploadId);
           untrackAbcBackgroundJob(uploadId);
           setProcessingDetail("Análise concluída — abrindo validação…");
@@ -382,6 +415,9 @@ export function OrcamentoPdfWizard({
 
           const total = update.pages_total || 0;
           const done = update.pages_done || 0;
+          if (total > 0) {
+            setProgressPercent(computeProgressPercent(done, total));
+          }
           if (update.status === "queued") {
             setProcessingDetail(
               update.message ??
@@ -412,6 +448,7 @@ export function OrcamentoPdfWizard({
             : "Montando planilha hierárquica…",
       );
       await finishWithResult(currentUploadId, result, singleFile);
+      setProgressPercent(100);
     } catch (error: unknown) {
       const msg = error instanceof Error ? error.message : "Erro ao processar arquivo";
       console.error(`[${logTag}] Falha no processamento integral:`, error);
@@ -485,6 +522,11 @@ export function OrcamentoPdfWizard({
                 mapJobToQueueItem(job, nameMap.get(job.upload_id) ?? job.upload_id),
               ),
             );
+
+            const batchPct = aggregateBatchProgress(jobs);
+            if (batchPct > 0) {
+              setProgressPercent(batchPct);
+            }
 
             const partialResults = new Map<string, AnaliticoFullPdfResult>();
             for (const job of jobs) {

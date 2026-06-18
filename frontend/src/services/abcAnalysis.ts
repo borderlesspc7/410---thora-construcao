@@ -20,6 +20,8 @@ export type AbcAnalysisJob = {
   tables_found?: number;
   items_found?: number;
   table_ids?: string[];
+  pages_total?: number;
+  pages_done?: number;
   error?: string;
   result?: Record<string, unknown>;
   created_at?: string;
