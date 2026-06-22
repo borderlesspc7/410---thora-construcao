@@ -47,6 +47,7 @@ FRONTEND_URLS = [
     "http://127.0.0.1:8001",
     "https://410-thora.netlify.app",
     "https://borderles-410.netlify.app",
+    "https://borderless-410-thora.netlify.app",
     os.getenv("FRONTEND_URL", ""),
     *EXTRA_FRONTEND_URLS,
 ]

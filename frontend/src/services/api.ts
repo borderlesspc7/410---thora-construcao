@@ -159,6 +159,40 @@ export const apiClient = axios.create({
   },
 });
 
+type RetryAxiosConfig = typeof apiClient extends { request: infer R } ? Parameters<R>[0] & {
+  __coldStartRetryCount?: number;
+} : never;
+
+// Retry automático quando o Render está acordando (502/503 sem header CORS).
+apiClient.interceptors.response.use(
+  (response) => response,
+  async (error: unknown) => {
+    const err = error as {
+      config?: RetryAxiosConfig;
+      response?: { status?: number };
+      code?: string;
+      message?: string;
+    };
+    const config = err.config;
+    if (!config || !isRenderColdStartError(error)) {
+      return Promise.reject(error);
+    }
+
+    const retryCount = config.__coldStartRetryCount ?? 0;
+    if (retryCount >= 4) {
+      return Promise.reject(error);
+    }
+
+    config.__coldStartRetryCount = retryCount + 1;
+    wakeApiServer();
+    await sleep(2500 + retryCount * 3000);
+    if (retryCount === 0) {
+      await pingApiHealth(10);
+    }
+    return apiClient.request(config);
+  },
+);
+
 // Attach Firebase ID token to protect backend endpoints.
 apiClient.interceptors.request.use(async (config) => {
   config.headers = config.headers ?? {};

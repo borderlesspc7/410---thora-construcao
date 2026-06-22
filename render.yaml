@@ -16,8 +16,10 @@ services:
       - key: USE_CELERY_QUEUE
         value: "false"
       - key: FRONTEND_URL
-        value: https://borderles-410.netlify.app
+        value: https://borderless-410-thora.netlify.app
       - key: FRONTEND_URLS
-        value: https://borderles-410.netlify.app,https://410-thora.netlify.app
+        value: https://borderless-410-thora.netlify.app,https://borderles-410.netlify.app,https://410-thora.netlify.app
+      - key: RENDER
+        value: "true"
       # Defina no painel do Render (Environment → Secret Files / env vars):
       # FIREBASE_CREDENTIALS, GEMINI_API_KEY, OPENAI_API_KEY (opcional)

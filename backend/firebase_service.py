@@ -18,6 +18,44 @@ from config import FIREBASE_STORAGE_BUCKET
 
 logger = logging.getLogger(__name__)
 
+_SERVICE_ACCOUNT_REQUIRED_FIELDS = (
+    "type",
+    "project_id",
+    "private_key",
+    "client_email",
+    "token_uri",
+)
+
+
+def _parse_firebase_credentials_env(raw: str) -> dict[str, Any]:
+    """Interpreta FIREBASE_CREDENTIALS (JSON inline ou base64)."""
+    import base64
+
+    text = raw.strip()
+    if not text:
+        raise ValueError("FIREBASE_CREDENTIALS vazio")
+
+    if not text.startswith("{"):
+        try:
+            text = base64.b64decode(text).decode("utf-8").strip()
+        except Exception as exc:
+            raise ValueError(
+                "FIREBASE_CREDENTIALS deve ser o JSON completo da service account "
+                "(Firebase Console → Project Settings → Service accounts → Generate new private key) "
+                "ou o mesmo JSON codificado em base64."
+            ) from exc
+
+    creds_dict = json.loads(text)
+    missing = [field for field in _SERVICE_ACCOUNT_REQUIRED_FIELDS if not creds_dict.get(field)]
+    if missing:
+        raise ValueError(
+            "JSON incompleto — campos ausentes: "
+            + ", ".join(missing)
+            + ". Use o arquivo .json da service account (não a config do app web)."
+        )
+    return creds_dict
+
+
 # Initialize Firebase
 db = None
 _firebase_disabled = os.getenv("FIREBASE_DISABLED", "").strip().lower() in {"1", "true", "yes", "on"}
@@ -42,7 +80,7 @@ else:
                 else None
             )
             if firebase_creds_env:
-                creds_dict = json.loads(firebase_creds_env)
+                creds_dict = _parse_firebase_credentials_env(firebase_creds_env)
                 creds = credentials.Certificate(creds_dict)
                 firebase_admin.initialize_app(creds, storage_options)
                 db = firestore.client()

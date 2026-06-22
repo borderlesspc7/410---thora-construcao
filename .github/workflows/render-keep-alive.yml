@@ -1,27 +1,35 @@
 # Ping periódico no Render para evitar sleep (free tier ~15 min sem tráfego).
-# Configure o secret RENDER_HEALTH_URL no GitHub:
-#   https://github.com/SEU-USUARIO/SEU-REPO/settings/secrets/actions
-# Valor: https://four10-thora-construcao.onrender.com/health
+# Secret opcional RENDER_HEALTH_URL sobrescreve a URL padrão abaixo.
 
 name: Render keep-alive
 
 on:
   schedule:
-    # A cada 10 minutos (Render dorme após ~15 min de inatividade)
-    - cron: "*/10 * * * *"
+    # A cada 5 min (margem segura — cron do GitHub pode atrasar alguns minutos)
+    - cron: "*/5 * * * *"
   workflow_dispatch:
+
+env:
+  DEFAULT_RENDER_HEALTH_URL: https://four10-thora-construcao.onrender.com/health
 
 jobs:
   ping:
     runs-on: ubuntu-latest
-    timeout-minutes: 2
+    timeout-minutes: 3
     steps:
-      - name: Ping /health
+      - name: Ping /health (com retry)
+        env:
+          RENDER_HEALTH_URL: ${{ secrets.RENDER_HEALTH_URL }}
         run: |
-          URL="${{ secrets.RENDER_HEALTH_URL }}"
-          if [ -z "$URL" ]; then
-            echo "Defina o secret RENDER_HEALTH_URL (ex.: https://seu-app.onrender.com/health)"
-            exit 1
-          fi
-          curl -fsS --max-time 60 "$URL"
-          echo "OK — $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          URL="${RENDER_HEALTH_URL:-$DEFAULT_RENDER_HEALTH_URL}"
+          echo "Ping → $URL"
+          for attempt in 1 2 3; do
+            if curl -fsS --max-time 90 "$URL"; then
+              echo "OK — tentativa $attempt — $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+              exit 0
+            fi
+            echo "Falha na tentativa $attempt — aguardando 15s..."
+            sleep 15
+          done
+          echo "Render não respondeu após 3 tentativas (pode estar acordando)."
+          exit 1
