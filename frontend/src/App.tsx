@@ -10,6 +10,7 @@ import CatalogoProdutos from "./pages/CatalogoProdutos";
 import BDICalculator from "./pages/BDICalculator";
 import Reports from "./pages/Reports";
 import AnaliseDetalhada from "./pages/AnaliseDetalhada";
+import TesteAnaliseOrcamento from "./pages/TesteAnaliseOrcamento";
 import Login from "./pages/Login";
 import Cadastro from "./pages/Cadastro";
 import { ProtectedApp } from "./features/auth/ProtectedApp";
@@ -41,6 +42,7 @@ const App = () => {
         <Route path="/bdi" element={<BDICalculator />} />
         <Route path="/bdi/:uploadId" element={<BDICalculator />} />
         <Route path="/relatorios" element={<Reports />} />
+        <Route path="/teste-analise" element={<TesteAnaliseOrcamento />} />
         <Route path="/analytics" element={<Navigate to="/" replace />} />
       </Route>
 

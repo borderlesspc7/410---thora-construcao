@@ -1251,3 +1251,23 @@ export const exportReviewedXLSX = async (uploadId: string) => {
     );
   }
 };
+
+export type AnalisarLinhasPayload = {
+  linhas: Record<string, unknown>[];
+  contexto?: {
+    bdi_global_percent?: number;
+    tolerancia_monetaria?: number;
+    tolerancia_percentual?: number;
+  };
+};
+
+export const analisarLinhasOrcamento = async (payload: AnalisarLinhasPayload) => {
+  try {
+    const response = await apiClient.post("/api/orcamentos/analisar-linhas", payload);
+    return response.data;
+  } catch (error: any) {
+    throw new Error(
+      error.response?.data?.detail || "Erro ao analisar linhas do orçamento",
+    );
+  }
+};

@@ -58,6 +58,13 @@ import {
   ANALISE_ABC_VALIDATION_STEP,
   ANALISE_ABC_WIZARD_STEPS,
 } from "../features/orcamentos/novoOrcamentoWizard";
+import {
+  analisarOrcamentoFromItens,
+  mensagensAnaliseLinha,
+  resultadoAnalisePorId,
+} from "../features/orcamentos/analiseOrcamento";
+import { AnaliseOrcamentoResumo } from "../components/orcamento/AnaliseOrcamentoResumo";
+import { AnaliseOrcamentoStatusBadge } from "../components/orcamento/AnaliseOrcamentoStatusBadge";
 
 // --- CONFIGURAÇÃO OBRIGATÓRIA DO WORKER (PARA VITE) ---
 // `?url` faz o Vite emitir o arquivo estático com URL correta (evita CORS do CDN e 404 por path relativo a esta página).
@@ -283,6 +290,36 @@ export default function ValidacaoOrcamento() {
   const [catalogo, setCatalogo] = useState<CatalogoProduto[]>([]);
 
   const abcResumo = useMemo(() => calcularResumoAbc(items), [items]);
+
+  const rawItemsParaAnalise = useMemo(() => {
+    if (hierarchicalItems.length > 0) return hierarchicalItems;
+    return items.map((item) => ({
+      id: item.id,
+      item: item.item,
+      item_numero: item.item,
+      tipo: item.tipo,
+      banco: item.banco,
+      codigo: item.code,
+      descricao: item.description,
+      unidade: item.unit,
+      quantidade: item.qty,
+      bdi: item.bdi,
+      valor_unitario: item.unitPrice,
+      unitPrice: item.unitPrice,
+      valor_total: item.lineTotal,
+      lineTotal: item.lineTotal,
+    }));
+  }, [hierarchicalItems, items]);
+
+  const resultadoAnalise = useMemo(
+    () => analisarOrcamentoFromItens(items, rawItemsParaAnalise),
+    [items, rawItemsParaAnalise],
+  );
+
+  const analisePorId = useMemo(
+    () => resultadoAnalisePorId(resultadoAnalise),
+    [resultadoAnalise],
+  );
 
   const economiaTotal = useMemo(
     () => items.reduce((sum, item) => sum + calcularEconomia(item), 0),
@@ -1303,6 +1340,16 @@ export default function ValidacaoOrcamento() {
                 Use a coluna <strong>Cód. catálogo</strong> para aplicar seu preço cadastrado.
                 A economia compara o total do edital com seu preço (quando menor).
               </p>
+              <div className="mt-4 rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+                <p className="mb-3 text-xs font-semibold uppercase tracking-wide text-slate-600">
+                  Análise determinística (sem IA)
+                </p>
+                <AnaliseOrcamentoResumo resultado={resultadoAnalise} />
+                <p className="mt-3 text-xs text-slate-500">
+                  Verifica cálculos, BDI e memória de cálculo nas observações. Grupos, capítulos e
+                  subtotais são ignorados automaticamente.
+                </p>
+              </div>
               {editalSemPrecos ? (
                 <div className="mt-4 flex gap-2 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-950">
                   <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
@@ -1381,6 +1428,9 @@ export default function ValidacaoOrcamento() {
                       <th className="sticky top-0 z-20 w-12 whitespace-nowrap bg-slate-50 px-2 py-3 text-center text-xs font-semibold uppercase tracking-wider text-slate-500 shadow-[inset_0_-1px_0_#e2e8f0]">
                         ABC
                       </th>
+                      <th className="sticky top-0 z-20 w-24 whitespace-nowrap bg-slate-50 px-2 py-3 text-center text-xs font-semibold uppercase tracking-wider text-slate-500 shadow-[inset_0_-1px_0_#e2e8f0]">
+                        Análise
+                      </th>
                       <th className="sticky top-0 z-20 min-w-[14rem] bg-slate-50 px-3 py-3 text-xs font-semibold uppercase tracking-wider text-slate-500 shadow-[inset_0_-1px_0_#e2e8f0]">
                         Descrição
                       </th>
@@ -1408,6 +1458,12 @@ export default function ValidacaoOrcamento() {
                   <tbody className="divide-y divide-slate-100">
                     {items.map((item) => {
                       const editable = isExecutiveItem(item);
+                      const analiseLinha = analisePorId.get(item.id);
+                      const analiseMensagens = mensagensAnaliseLinha(analiseLinha);
+                      const alertasCombinados = [
+                        ...(item.extractionAlerts ?? []),
+                        ...analiseMensagens,
+                      ];
                       // Determinar a cor de fundo com base na classificação ABC
                       let rowBgClass = "hover:bg-blue-50/30";
                       if (item.classification === "A") {
@@ -1529,12 +1585,15 @@ export default function ValidacaoOrcamento() {
                             <span className="text-slate-300">-</span>
                           )}
                         </td>
+                        <td className="w-24 px-2 py-2 text-center align-top">
+                          <AnaliseOrcamentoStatusBadge resultado={analiseLinha} compact />
+                        </td>
                         <td className="min-w-[14rem] max-w-none px-3 py-2 align-top">
                           <div className="flex items-start gap-1">
-                            {item.extractionAlerts && item.extractionAlerts.length > 0 ? (
+                            {alertasCombinados.length > 0 ? (
                               <span
                                 className="mt-0.5 shrink-0 text-amber-500"
-                                title={item.extractionAlerts.join(" · ")}
+                                title={alertasCombinados.join(" · ")}
                               >
                                 <AlertCircle className="h-4 w-4" aria-hidden="true" />
                               </span>
@@ -1550,7 +1609,7 @@ export default function ValidacaoOrcamento() {
                                 )
                               }
                               className={`w-full min-w-[12rem] bg-transparent text-sm leading-snug focus:outline-none border-b border-transparent focus:border-blue-500 ${
-                                item.extractionAlerts && item.extractionAlerts.length > 0
+                                alertasCombinados.length > 0
                                   ? "border-amber-200"
                                   : ""
                               } ${

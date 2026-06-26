@@ -26,6 +26,12 @@ import {
   type LinhaAnalitica,
 } from "../features/orcamentos/orcamentoAnalitico";
 import {
+  analisarOrcamentoFromLinhasAnaliticas,
+  resultadoAnalisePorId,
+} from "../features/orcamentos/analiseOrcamento";
+import { AnaliseOrcamentoResumo } from "../components/orcamento/AnaliseOrcamentoResumo";
+import { AnaliseOrcamentoStatusBadge } from "../components/orcamento/AnaliseOrcamentoStatusBadge";
+import {
   aplicarEdicaoAnalitica,
   recalcularGruposAnalitico,
   type AnaliticoEditableField,
@@ -78,6 +84,7 @@ const OrcamentoAnalitico: React.FC = () => {
 
   const [viewMode, setViewMode] = useState<ViewMode>("loading");
   const [linhas, setLinhas] = useState<LinhaAnalitica[]>([]);
+  const [rawHierarchicalItems, setRawHierarchicalItems] = useState<unknown[]>([]);
   const [currentUploadId, setCurrentUploadId] = useState<string | null>(uploadIdParam ?? null);
   const [exportModalOpen, setExportModalOpen] = useState(false);
   const [nomeProjeto, setNomeProjeto] = useState<string>(
@@ -99,6 +106,7 @@ const OrcamentoAnalitico: React.FC = () => {
       const mapped = recalcularGruposAnalitico(mapRawListToLinhasAnaliticas(rawItems));
       if (mapped.length === 0) return false;
       setLinhas(mapped);
+      setRawHierarchicalItems(rawItems);
       setViewMode("results");
       if (uploadId) setCurrentUploadId(uploadId);
       if (filename) setNomeProjeto(filename.replace(/\.pdf$/i, ""));
@@ -227,6 +235,16 @@ const OrcamentoAnalitico: React.FC = () => {
   };
 
   const resumo = useMemo(() => calcularResumoAnalitico(linhas), [linhas]);
+
+  const resultadoAnalise = useMemo(
+    () => analisarOrcamentoFromLinhasAnaliticas(linhas, rawHierarchicalItems),
+    [linhas, rawHierarchicalItems],
+  );
+
+  const analisePorId = useMemo(
+    () => resultadoAnalisePorId(resultadoAnalise),
+    [resultadoAnalise],
+  );
 
   const getLockForItem = useCallback(
     (itemId: string) => activeLocks.get(itemId) ?? null,
@@ -425,6 +443,13 @@ const OrcamentoAnalitico: React.FC = () => {
           </div>
         </div>
 
+        <div className="mb-6 rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+          <p className="mb-3 text-xs font-semibold uppercase tracking-wide text-slate-600">
+            Análise determinística (sem IA)
+          </p>
+          <AnaliseOrcamentoResumo resultado={resultadoAnalise} />
+        </div>
+
         <div className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
           <div className="flex items-center gap-2 border-b border-slate-200 bg-slate-50 px-4 py-3">
             <FileSpreadsheet className="h-4 w-4 text-slate-500" />
@@ -443,7 +468,8 @@ const OrcamentoAnalitico: React.FC = () => {
                   <th className="px-3 py-3 text-left font-semibold">Item / Rótulo</th>
                   <th className="px-3 py-3 text-left font-semibold">Código</th>
                   <th className="px-3 py-3 text-left font-semibold">Banco</th>
-                  <th className="min-w-[240px] px-3 py-3 text-left font-semibold">Descrição</th>
+                  <th className="px-3 py-3 text-left font-semibold">Descrição</th>
+                  <th className="px-3 py-3 text-center font-semibold">Análise</th>
                   <th className="px-3 py-3 text-left font-semibold">Tipo</th>
                   <th className="px-3 py-3 text-center font-semibold">Und</th>
                   <th className="px-3 py-3 text-right font-semibold">Quant.</th>
@@ -491,6 +517,12 @@ const OrcamentoAnalitico: React.FC = () => {
                     </td>
                     <td className={`px-3 py-2 ${linha.tipoLinha === "composicao" ? "pl-10" : ""}`}>
                       {linha.descricao}
+                    </td>
+                    <td className="px-3 py-2 text-center">
+                      <AnaliseOrcamentoStatusBadge
+                        resultado={analisePorId.get(linha.id)}
+                        compact
+                      />
                     </td>
                     <td className="px-3 py-2 text-sm text-slate-600">
                       {linha.tipoLinha === "grupo" ? "" : linha.tipoCategoria}
