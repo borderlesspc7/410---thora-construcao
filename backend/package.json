@@ -3,6 +3,7 @@
   "private": true,
   "scripts": {
     "setup": "bash scripts/setup.sh",
-    "dev": "bash scripts/dev.sh"
+    "dev": "node scripts/dev.js",
+    "dev:bash": "bash scripts/dev.sh"
   }
 }

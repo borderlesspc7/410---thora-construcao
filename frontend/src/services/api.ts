@@ -29,8 +29,12 @@ const getAPIBase = () => {
     window.location.hostname === "thora-construcao.vercel.app";
   const isRenderHost = window.location.hostname.endsWith(".onrender.com");
 
+  // Dev local: mesma origem do Vite → proxy encaminha /api e /health ao backend (8001).
+  if (import.meta.env.DEV && isLocalhost) {
+    return window.location.origin;
+  }
+
   // VITE_API_URL explícito (ex.: Render) — necessário para operações longas (>30s).
-  // Proxy Netlify tem timeout ~26s e quebra detect-tables / upload grande.
   if (import.meta.env.VITE_API_URL) {
     return import.meta.env.VITE_API_URL;
   }
@@ -45,14 +49,10 @@ const getAPIBase = () => {
   }
 
   if (import.meta.env.DEV) {
-    if (window.location.port === "8000") {
-      return window.location.origin;
-    }
-
-    return "http://localhost:8000";
-  } else {
-    return window.location.origin;
+    return "http://localhost:8001";
   }
+
+  return window.location.origin;
 };
 
 const API_BASE = getAPIBase();
@@ -108,7 +108,8 @@ export const pingApiHealth = async (maxAttempts = 15): Promise<boolean> => {
     }
     try {
       const response = await apiClient.get("/health", { timeout: 60000 });
-      if (response.data?.status === "online") {
+      const status = response.data?.status;
+      if (status === "online" || status === "ok") {
         return true;
       }
     } catch {
@@ -356,6 +357,11 @@ export type OrcamentoTableCandidate = {
   pagina?: number;
   coordenadas?: number[];
   imagem_base64?: string;
+  source?: string;
+  row_count?: number;
+  budget_score?: number;
+  is_budget_likely?: boolean;
+  preview_rows?: string[][];
 };
 
 export type OrcamentoTableDetectResponse = {

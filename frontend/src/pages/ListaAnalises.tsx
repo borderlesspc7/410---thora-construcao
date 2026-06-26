@@ -4,13 +4,13 @@ import { ArrowLeft, Loader2, Plus, X } from "lucide-react";
 import { toast } from "sonner";
 import { AbcAnalysisList } from "../components/abc/AbcAnalysisList";
 import { TableSelector, type MockTableOption } from "../components/TableSelector";
+import { mapTableCandidates } from "../utils/mapTableCandidates";
 import { btnPrimary, btnMuted } from "../components/ui/buttonClasses";
 import {
   detectOrcamentoTables,
   ensureApiReady,
   getOrcamentoTableCandidates,
   uploadPDF,
-  type OrcamentoTableCandidate,
 } from "../services/api";
 import {
   enqueueAbcProcess,
@@ -34,16 +34,6 @@ function sortJobsNewestFirst(jobs: AbcAnalysisJob[]): AbcAnalysisJob[] {
     const bTime = b.completed_at || b.updated_at || b.created_at || "";
     return bTime.localeCompare(aTime);
   });
-}
-
-function mapTableCandidates(options: OrcamentoTableCandidate[]): MockTableOption[] {
-  return options.map((option) => ({
-    id: option.id,
-    name: option.nome_tabela || `Página ${option.pagina ?? option.num_pagina ?? "?"}`,
-    page: option.num_pagina || option.pagina || 1,
-    preview: option.preview_texto || "Visualização disponível via imagem.",
-    imagem_base64: option.imagem_base64,
-  }));
 }
 
 export default function ListaAnalises() {
@@ -410,6 +400,7 @@ export default function ListaAnalises() {
                       : [...prev, table.id],
                   );
                 }}
+                onSetSelectedIds={setSelectedTableIds}
                 onConfirm={() => void handleConfirmTables()}
                 confirmLabel={isConfirming ? "Enfileirando…" : "Analisar com IA"}
               />

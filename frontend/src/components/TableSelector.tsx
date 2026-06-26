@@ -1,152 +1,234 @@
-import React, { useState, useEffect, useCallback, useRef } from "react";
-import { Table2, Eye, X } from "lucide-react";
-import { btnPrimary } from "./ui/buttonClasses";
+import React, { useState, useEffect, useCallback, useRef, useMemo } from "react";
+import { ChevronLeft, ChevronRight, Sparkles } from "lucide-react";
+import { btnPrimary, btnSecondary } from "./ui/buttonClasses";
 
-const PREVIEW_BASE_HEIGHT_REM = 8;
-const PREVIEW_BASE_HEIGHT_LARGE_REM = 26;
-const ZOOM_MIN = 0.6;
-const ZOOM_MAX = 4;
-const ZOOM_STEP = 0.12;
+const ZOOM_MIN = 0.5;
+const ZOOM_MAX = 3;
+const ZOOM_STEP = 0.1;
+const INITIAL_ZOOM = 1;
 
-function useWheelZoom(initialScale = 1) {
+function useWheelZoom(initialScale = INITIAL_ZOOM) {
   const [scale, setScale] = useState(initialScale);
 
-  /** Usado com addEventListener(..., { passive: false }) — o onWheel do React é passivo e não permite preventDefault. */
   const applyWheelDelta = useCallback((delta: number) => {
     setScale((s) => Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, s + delta)));
   }, []);
 
-  const resetZoom = useCallback(() => setScale(1), []);
+  const resetZoom = useCallback(() => setScale(initialScale), [initialScale]);
 
-  return { scale, applyWheelDelta, resetZoom };
+  return { scale, applyWheelDelta, resetZoom, setScale };
 }
 
-const MODAL_PREVIEW_BASE_HEIGHT_REM = 36;
-
-interface ZoomableTableImageProps {
-  src: string;
-  alt: string;
-  /** Altura base em rem (prévia no card vs. modal) */
-  baseHeightRem: number;
-  containerClassName: string;
-  scale: number;
-  applyWheelDelta: (delta: number) => void;
-  onResetZoom?: () => void;
+function clamp(value: number, min: number, max: number) {
+  return Math.min(max, Math.max(min, value));
 }
 
-function ZoomableTableImage({
+function CarouselTableImage({
   src,
   alt,
-  baseHeightRem,
-  containerClassName,
   scale,
   applyWheelDelta,
   onResetZoom,
-}: ZoomableTableImageProps) {
+}: {
+  src: string;
+  alt: string;
+  scale: number;
+  applyWheelDelta: (delta: number) => void;
+  onResetZoom: () => void;
+}) {
   const containerRef = useRef<HTMLDivElement>(null);
+  const imgRef = useRef<HTMLImageElement>(null);
+  const [fitWidth, setFitWidth] = useState<number | null>(null);
+  const [naturalSize, setNaturalSize] = useState<{ w: number; h: number } | null>(null);
+  const [containerSize, setContainerSize] = useState<{ w: number; h: number } | null>(null);
+  const [pan, setPan] = useState({ x: 0, y: 0 });
+  const [isDragging, setIsDragging] = useState(false);
+  const dragState = useRef({ startX: 0, startY: 0, originX: 0, originY: 0 });
+  const panRef = useRef(pan);
+  panRef.current = pan;
+
+  const padding = 32;
+  const displayWidthPx =
+    fitWidth != null ? Math.round(fitWidth * scale) : null;
+  const displayHeightPx =
+    naturalSize && fitWidth
+      ? Math.round((naturalSize.h / naturalSize.w) * fitWidth * scale)
+      : null;
+
+  const getPanBounds = useCallback(() => {
+    if (!containerSize || !displayWidthPx || !displayHeightPx) {
+      return { minX: 0, maxX: 0, minY: 0, maxY: 0 };
+    }
+    const innerW = containerSize.w - padding;
+    const innerH = containerSize.h - padding;
+    const overflowX = Math.max(0, displayWidthPx - innerW);
+    const overflowY = Math.max(0, displayHeightPx - innerH);
+    const margin = 24;
+    return {
+      minX: -(overflowX / 2 + margin),
+      maxX: overflowX / 2 + margin,
+      minY: -(overflowY / 2 + margin),
+      maxY: overflowY / 2 + margin,
+    };
+  }, [containerSize, displayWidthPx, displayHeightPx]);
+
+  const clampPan = useCallback(
+    (next: { x: number; y: number }) => {
+      const bounds = getPanBounds();
+      return {
+        x: clamp(next.x, bounds.minX, bounds.maxX),
+        y: clamp(next.y, bounds.minY, bounds.maxY),
+      };
+    },
+    [getPanBounds],
+  );
+
+  const canPan = useMemo(() => {
+    if (!containerSize || !displayWidthPx || !displayHeightPx) return false;
+    const innerW = containerSize.w - padding;
+    const innerH = containerSize.h - padding;
+    return displayWidthPx > innerW + 4 || displayHeightPx > innerH + 4;
+  }, [containerSize, displayWidthPx, displayHeightPx]);
+
+  useEffect(() => {
+    setFitWidth(null);
+    setNaturalSize(null);
+    setPan({ x: 0, y: 0 });
+  }, [src]);
+
+  useEffect(() => {
+    setPan((current) => clampPan(current));
+  }, [scale, displayWidthPx, displayHeightPx, containerSize, clampPan]);
+
+  const measureFit = useCallback(() => {
+    const img = imgRef.current;
+    const container = containerRef.current;
+    if (!img || !container || img.naturalWidth === 0) return;
+    const available = Math.max(200, container.clientWidth - padding);
+    const fitted = Math.min(img.naturalWidth, available);
+    setNaturalSize({ w: img.naturalWidth, h: img.naturalHeight });
+    setFitWidth(fitted);
+    setContainerSize({ w: container.clientWidth, h: container.clientHeight });
+  }, []);
 
   useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
-
     const handler = (e: WheelEvent) => {
       e.preventDefault();
-      e.stopPropagation();
-      const step = e.deltaY < 0 ? ZOOM_STEP : -ZOOM_STEP;
-      applyWheelDelta(step);
+      applyWheelDelta(e.deltaY < 0 ? ZOOM_STEP : -ZOOM_STEP);
     };
-
     el.addEventListener("wheel", handler, { passive: false });
-    return () => {
-      el.removeEventListener("wheel", handler);
-    };
+    return () => el.removeEventListener("wheel", handler);
   }, [applyWheelDelta]);
 
+  useEffect(() => {
+    const onResize = () => measureFit();
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, [measureFit]);
+
+  const handlePointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (!canPan || e.button !== 0) return;
+    e.preventDefault();
+    e.currentTarget.setPointerCapture(e.pointerId);
+    setIsDragging(true);
+    dragState.current = {
+      startX: e.clientX,
+      startY: e.clientY,
+      originX: panRef.current.x,
+      originY: panRef.current.y,
+    };
+  };
+
+  const handlePointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (!isDragging) return;
+    e.preventDefault();
+    const dx = e.clientX - dragState.current.startX;
+    const dy = e.clientY - dragState.current.startY;
+    setPan(
+      clampPan({
+        x: dragState.current.originX + dx,
+        y: dragState.current.originY + dy,
+      }),
+    );
+  };
+
+  const endDrag = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (!isDragging) return;
+    setIsDragging(false);
+    try {
+      e.currentTarget.releasePointerCapture(e.pointerId);
+    } catch {
+      /* ignore */
+    }
+  };
+
+  const handleDoubleClick = () => {
+    onResetZoom();
+    setPan({ x: 0, y: 0 });
+  };
+
+  const maxZoomBeforeBlur =
+    naturalSize && fitWidth
+      ? Math.round((naturalSize.w / fitWidth) * 10) / 10
+      : null;
+
   return (
-    <div
-      ref={containerRef}
-      className={containerClassName}
-      onDoubleClick={(e) => {
-        e.stopPropagation();
-        onResetZoom?.();
-      }}
-      role="region"
-      aria-label="Prévia da tabela — use a roda do mouse para ampliar ou reduzir; duplo clique redefine o zoom"
-    >
-      <div className="flex justify-center py-1">
-        <img
-          src={src}
-          alt={alt}
-          className="object-contain object-top select-none"
-          draggable={false}
+    <div className="space-y-2">
+      <div
+        ref={containerRef}
+        className={`relative min-h-[min(32rem,58vh)] w-full overflow-hidden rounded-xl border border-slate-200 bg-slate-100/80 ${
+          canPan ? (isDragging ? "cursor-grabbing" : "cursor-grab") : "cursor-default"
+        }`}
+        style={{ touchAction: canPan ? "none" : "auto" }}
+        onPointerDown={handlePointerDown}
+        onPointerMove={handlePointerMove}
+        onPointerUp={endDrag}
+        onPointerCancel={endDrag}
+        onDoubleClick={handleDoubleClick}
+        role="region"
+        aria-label={alt}
+      >
+        <div
+          className="flex min-h-[min(32rem,58vh)] w-full items-center justify-center"
           style={{
-            height: `${baseHeightRem * scale}rem`,
-            width: "auto",
-            maxWidth: "none",
+            transform: `translate(${pan.x}px, ${pan.y}px)`,
+            transition: isDragging ? "none" : "transform 0.08s ease-out",
+            willChange: "transform",
           }}
-        />
+        >
+          <img
+            ref={imgRef}
+            src={src}
+            alt={alt}
+            className="block max-h-none select-none"
+            draggable={false}
+            decoding="sync"
+            onLoad={measureFit}
+            style={{
+              width: displayWidthPx ? `${displayWidthPx}px` : `calc(100% - ${padding}px)`,
+              height: "auto",
+              maxWidth: "none",
+              imageRendering: "auto",
+              pointerEvents: "none",
+              userSelect: "none",
+            }}
+          />
+        </div>
+      </div>
+      <div className="flex flex-wrap items-center justify-center gap-3 text-xs text-slate-500">
+        <span>
+          Roda do mouse para zoom
+          {canPan ? " · arraste para mover" : ""}
+          {" · duplo clique para redefinir"}
+        </span>
+        {maxZoomBeforeBlur != null && maxZoomBeforeBlur > 1 && (
+          <span className="text-slate-400">· Nítido até {maxZoomBeforeBlur}x</span>
+        )}
+        <span className="font-medium text-slate-600">{Math.round(scale * 100)}%</span>
       </div>
     </div>
-  );
-}
-
-function TableCardPreviewImage({
-  base64,
-  tableName,
-  large = false,
-}: {
-  base64: string;
-  tableName: string;
-  large?: boolean;
-}) {
-  const { scale, applyWheelDelta, resetZoom } = useWheelZoom(1);
-  return (
-    <div className={`flex flex-1 flex-col ${large ? "mb-2" : "mb-5"}`}>
-      <ZoomableTableImage
-        src={`data:image/png;base64,${base64}`}
-        alt={`Print da tabela ${tableName}`}
-        baseHeightRem={large ? PREVIEW_BASE_HEIGHT_LARGE_REM : PREVIEW_BASE_HEIGHT_REM}
-        containerClassName={
-          large
-            ? "flex min-h-88 max-h-[32rem] flex-1 justify-center overflow-auto rounded-xl border border-slate-200 bg-slate-50 p-3"
-            : "flex max-h-52 min-h-32 flex-1 justify-center overflow-auto rounded-lg border border-slate-100 bg-slate-50/80 p-2"
-        }
-        scale={scale}
-        applyWheelDelta={applyWheelDelta}
-        onResetZoom={resetZoom}
-      />
-      <p
-        className={`mt-2 text-center leading-tight text-slate-400 ${
-          large ? "text-xs" : "text-[10px]"
-        }`}
-      >
-        Roda do mouse na prévia para zoom · duplo clique para redefinir
-      </p>
-    </div>
-  );
-}
-
-function ExpandedTableModalContent({ imageBase64 }: { imageBase64: string }) {
-  const { scale, applyWheelDelta, resetZoom } = useWheelZoom(1);
-  useEffect(() => {
-    resetZoom();
-  }, [imageBase64, resetZoom]);
-
-  return (
-    <>
-      <p className="mb-2 px-1 text-center text-xs text-slate-500">
-        Roda do mouse para zoom · duplo clique na imagem para redefinir
-      </p>
-      <ZoomableTableImage
-        src={`data:image/png;base64,${imageBase64}`}
-        alt="Visualização ampliada da tabela"
-        baseHeightRem={MODAL_PREVIEW_BASE_HEIGHT_REM}
-        containerClassName="max-h-[calc(90vh-5rem)] overflow-auto rounded bg-slate-50 p-2"
-        scale={scale}
-        applyWheelDelta={applyWheelDelta}
-        onResetZoom={resetZoom}
-      />
-    </>
   );
 }
 
@@ -156,6 +238,11 @@ export interface MockTableOption {
   page: number;
   preview: string;
   imagem_base64?: string;
+  preview_rows?: string[][];
+  row_count?: number;
+  budget_score?: number;
+  is_budget_likely?: boolean;
+  source?: string;
 }
 
 interface TableSelectorProps {
@@ -166,27 +253,8 @@ interface TableSelectorProps {
   layout?: "default" | "large";
   confirmLabel?: string;
   onSelect: (table: MockTableOption) => void;
+  onSetSelectedIds?: (ids: string[]) => void;
   onConfirm?: () => void;
-}
-
-function TableCardSkeleton({ large = false }: { large?: boolean }) {
-  return (
-    <div
-      className={`animate-pulse rounded-2xl border border-slate-200 bg-white shadow-sm ${
-        large ? "p-6 sm:p-8" : "p-5"
-      }`}
-      aria-hidden="true"
-    >
-      <div className="mb-5 flex items-center gap-4">
-        <div className={`shrink-0 rounded-xl bg-slate-200 ${large ? "h-14 w-14" : "h-12 w-12"}`} />
-        <div className="flex-1 space-y-2">
-          <div className={`rounded bg-slate-200 ${large ? "h-5 w-[70%]" : "h-4 w-[85%]"}`} />
-          <div className="h-3 w-24 rounded bg-slate-100" />
-        </div>
-      </div>
-      <div className={`rounded-xl bg-slate-100 ${large ? "min-h-88" : "h-32"}`} />
-    </div>
-  );
 }
 
 export const TableSelector: React.FC<TableSelectorProps> = ({
@@ -194,158 +262,212 @@ export const TableSelector: React.FC<TableSelectorProps> = ({
   loading,
   disabled = false,
   selectedIds = [],
-  layout = "default",
   confirmLabel = "Processar com IA",
   onSelect,
+  onSetSelectedIds,
   onConfirm,
 }) => {
-  const isLarge = layout === "large";
-  const [previewImage, setPreviewImage] = useState<string | null>(null);
+  const [currentIndex, setCurrentIndex] = useState(0);
+  const { scale, applyWheelDelta, resetZoom } = useWheelZoom(INITIAL_ZOOM);
+
+  const sortedTables = useMemo(
+    () =>
+      [...tables].sort(
+        (a, b) =>
+          a.page - b.page ||
+          (b.row_count ?? 0) - (a.row_count ?? 0) ||
+          a.name.localeCompare(b.name),
+      ),
+    [tables],
+  );
+
+  const currentTable = sortedTables[currentIndex] ?? null;
+  const total = sortedTables.length;
+  const isSelected = currentTable ? selectedIds.includes(currentTable.id) : false;
 
   useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        setPreviewImage(null);
+    resetZoom();
+    setCurrentIndex(0);
+  }, [tables, resetZoom]);
+
+  useEffect(() => {
+    resetZoom();
+  }, [currentIndex, resetZoom]);
+
+  useEffect(() => {
+    if (currentIndex >= total && total > 0) {
+      setCurrentIndex(total - 1);
+    }
+  }, [currentIndex, total]);
+
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (total <= 1) return;
+      if (e.key === "ArrowLeft") {
+        e.preventDefault();
+        setCurrentIndex((i) => Math.max(0, i - 1));
+      }
+      if (e.key === "ArrowRight") {
+        e.preventDefault();
+        setCurrentIndex((i) => Math.min(total - 1, i + 1));
       }
     };
-    if (previewImage) {
-      document.addEventListener("keydown", handleKeyDown);
-    }
-    return () => {
-      document.removeEventListener("keydown", handleKeyDown);
-    };
-  }, [previewImage]);
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [total]);
+
+  const goPrev = () => setCurrentIndex((i) => Math.max(0, i - 1));
+  const goNext = () => setCurrentIndex((i) => Math.min(total - 1, i + 1));
+
+  const handleSelectLikely = () => {
+    const ids = tables.filter((t) => t.is_budget_likely).map((t) => t.id);
+    onSetSelectedIds?.(ids);
+  };
 
   if (loading) {
     return (
       <div
-        className={`grid w-full grid-cols-1 ${
-          isLarge ? "gap-8 lg:grid-cols-2" : "mt-8 max-w-5xl gap-4 sm:grid-cols-2 lg:grid-cols-3"
-        }`}
+        className="mt-6 flex min-h-[24rem] flex-col items-center justify-center rounded-2xl border border-slate-200 bg-white p-8 shadow-sm"
         role="status"
-        aria-label="Analisando documento em busca de tabelas"
+        aria-label="Detectando tabelas"
       >
-        <span className="sr-only">Carregando opções de tabelas…</span>
-        <TableCardSkeleton large={isLarge} />
-        <TableCardSkeleton large={isLarge} />
-        <TableCardSkeleton large={isLarge} />
+        <div className="h-48 w-full max-w-2xl animate-pulse rounded-xl bg-slate-100" />
+        <p className="mt-4 text-sm text-slate-500">Detectando tabelas no PDF…</p>
       </div>
     );
   }
 
-  return (
-    <div className="w-full">
-      <div
-        className={`grid w-full grid-cols-1 ${
-          isLarge ? "gap-8 lg:grid-cols-2" : "mt-8 max-w-5xl gap-4 sm:grid-cols-2 lg:grid-cols-3"
-        } ${disabled ? "pointer-events-none opacity-60" : ""}`}
-        role="list"
-        aria-label="Tabelas detectadas no documento"
-        aria-busy={disabled}
-      >
-        {tables.map((table) => {
-          const isSelected = selectedIds.includes(table.id);
-          return (
-            <article
-              key={table.id}
-              role="listitem"
-              className={`flex cursor-pointer flex-col rounded-2xl border shadow-sm transition hover:border-slate-300 hover:shadow-lg ${
-                isLarge ? "p-6 sm:p-8" : "p-5"
-              } ${
-                isSelected
-                  ? "border-blue-500 bg-blue-50/60 ring-2 ring-blue-400/80"
-                  : "border-slate-200 bg-white"
-              }`}
-              onClick={() => onSelect(table)}
-              aria-labelledby={`table-name-${table.id}`}
-              aria-label={`Card de tabela: ${table.name}, página ${table.page}`}
-            >
-              <div className={`flex items-start gap-4 ${isLarge ? "mb-5" : "mb-4"}`}>
-                <div
-                  className={`flex shrink-0 items-center justify-center rounded-xl border border-slate-200 bg-slate-50 ${
-                    isLarge ? "h-14 w-14" : "h-12 w-12"
-                  }`}
-                  aria-hidden="true"
-                >
-                  <Table2 className={isLarge ? "h-7 w-7" : "h-6 w-6"} />
-                </div>
-                <div className="min-w-0 flex-1">
-                  <h3
-                    id={`table-name-${table.id}`}
-                    className={`font-semibold leading-snug text-slate-900 ${
-                      isLarge ? "text-lg" : ""
-                    }`}
-                  >
-                    {table.name}
-                  </h3>
-                  <p
-                    className={`mt-1 font-medium uppercase tracking-wide text-slate-500 ${
-                      isLarge ? "text-sm" : "text-xs"
-                    }`}
-                  >
-                    Página {table.page}
-                  </p>
-                </div>
-                <div className="flex shrink-0 items-center gap-3">
-                  {table.imagem_base64 && (
-                    <button
-                      type="button"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setPreviewImage(table.imagem_base64!);
-                      }}
-                      className={`rounded-full text-slate-500 transition hover:bg-slate-100 hover:text-slate-800 ${
-                        isLarge ? "p-2.5" : "p-1.5"
-                      }`}
-                      aria-label="Visualizar tabela em tela cheia"
-                    >
-                      <Eye className={isLarge ? "h-6 w-6" : "h-5 w-5"} />
-                    </button>
-                  )}
-                  <input
-                    type="checkbox"
-                    checked={isSelected}
-                    readOnly
-                    className={`cursor-pointer rounded border-slate-300 text-blue-600 focus:ring-blue-500 ${
-                      isLarge ? "h-6 w-6" : "h-5 w-5"
-                    }`}
-                  />
-                </div>
-              </div>
+  if (!currentTable) {
+    return null;
+  }
 
-              {table.imagem_base64 ? (
-                <TableCardPreviewImage
-                  base64={table.imagem_base64}
-                  tableName={table.name}
-                  large={isLarge}
-                />
-              ) : (
-                <div
-                  className={`flex flex-1 rounded-xl border border-slate-100 bg-slate-50/80 font-mono leading-relaxed text-slate-600 ${
-                    isLarge
-                      ? "min-h-72 p-5 text-sm"
-                      : "mb-5 min-h-18 p-3 text-xs"
-                  }`}
-                  aria-label={`Prévia do conteúdo: ${table.preview}`}
-                >
-                  <p className={isLarge ? "line-clamp-12" : "line-clamp-4"}>{table.preview}</p>
-                </div>
-              )}
-            </article>
-          );
-        })}
+  return (
+    <div className={`mt-6 w-full ${disabled ? "pointer-events-none opacity-60" : ""}`}>
+      {/* Cabeçalho */}
+      <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <div>
+          <p className="text-sm font-medium text-slate-700">
+            {total} planilha{total !== 1 ? "s" : ""} encontrada{total !== 1 ? "s" : ""}
+          </p>
+          <p className="text-xs text-slate-500">
+            Use as setas para navegar · marque as planilhas que deseja analisar
+          </p>
+        </div>
+        {tables.some((t) => t.is_budget_likely) && (
+          <button
+            type="button"
+            className={`${btnSecondary} gap-1.5 px-3 py-1.5 text-xs`}
+            onClick={handleSelectLikely}
+          >
+            <Sparkles className="h-3.5 w-3.5" />
+            Selecionar prováveis
+          </button>
+        )}
       </div>
-      
-      {onConfirm && tables.length > 0 && (
-        <div
-          className={`flex flex-col gap-3 border-t border-slate-200 sm:flex-row sm:items-center sm:justify-between ${
-            isLarge ? "mt-10 pt-8" : "mt-6"
-          }`}
-        >
+
+      {/* Carrossel */}
+      <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
+        <div className="border-b border-slate-100 px-4 py-3 sm:px-6">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="min-w-0 flex-1">
+              <h3 className="truncate text-base font-semibold text-slate-900 sm:text-lg">
+                {currentTable.name}
+              </h3>
+              <p className="mt-0.5 text-sm text-slate-500">
+                Planilha {currentIndex + 1} de {total}
+                {currentTable.row_count != null && ` · ${currentTable.row_count} linhas`}
+              </p>
+            </div>
+            <label className="flex shrink-0 cursor-pointer items-center gap-2 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-100">
+              <input
+                type="checkbox"
+                checked={isSelected}
+                onChange={() => onSelect(currentTable)}
+                className="h-4 w-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
+              />
+              Selecionar esta planilha
+            </label>
+          </div>
+          {currentTable.is_budget_likely && (
+            <span className="mt-2 inline-block rounded-full bg-emerald-100 px-2.5 py-0.5 text-xs font-semibold text-emerald-800">
+              Provável planilha de orçamento
+            </span>
+          )}
+        </div>
+
+        <div className="relative flex items-stretch px-2 py-4 sm:px-4 sm:py-6">
+          <button
+            type="button"
+            onClick={goPrev}
+            disabled={currentIndex === 0}
+            className="absolute top-1/2 left-1 z-10 flex h-11 w-11 -translate-y-1/2 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-700 shadow-md transition hover:bg-slate-50 disabled:pointer-events-none disabled:opacity-30 sm:left-3 sm:h-12 sm:w-12"
+            aria-label="Planilha anterior"
+          >
+            <ChevronLeft className="h-6 w-6" />
+          </button>
+
+          <div className="mx-12 w-full min-w-0 flex-1 sm:mx-16">
+            {currentTable.imagem_base64 ? (
+              <>
+                <CarouselTableImage
+                  src={`data:image/png;base64,${currentTable.imagem_base64}`}
+                  alt={currentTable.name}
+                  scale={scale}
+                  applyWheelDelta={applyWheelDelta}
+                  onResetZoom={resetZoom}
+                />
+              </>
+            ) : (
+              <div className="flex min-h-[min(20rem,40vh)] items-center justify-center rounded-xl border border-dashed border-slate-200 bg-slate-50 p-6 text-center text-sm text-slate-500">
+                <p>{currentTable.preview || "Imagem indisponível para esta planilha."}</p>
+              </div>
+            )}
+          </div>
+
+          <button
+            type="button"
+            onClick={goNext}
+            disabled={currentIndex >= total - 1}
+            className="absolute top-1/2 right-1 z-10 flex h-11 w-11 -translate-y-1/2 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-700 shadow-md transition hover:bg-slate-50 disabled:pointer-events-none disabled:opacity-30 sm:right-3 sm:h-12 sm:w-12"
+            aria-label="Próxima planilha"
+          >
+            <ChevronRight className="h-6 w-6" />
+          </button>
+        </div>
+
+        {/* Indicadores */}
+        {total > 1 && (
+          <div className="flex flex-wrap items-center justify-center gap-2 border-t border-slate-100 px-4 py-3">
+            {sortedTables.map((table, idx) => {
+              const active = idx === currentIndex;
+              const selected = selectedIds.includes(table.id);
+              return (
+                <button
+                  key={table.id}
+                  type="button"
+                  onClick={() => setCurrentIndex(idx)}
+                  className={`h-2.5 rounded-full transition-all ${
+                    active
+                      ? "w-8 bg-blue-600"
+                      : selected
+                        ? "w-2.5 bg-blue-300 hover:bg-blue-400"
+                        : "w-2.5 bg-slate-300 hover:bg-slate-400"
+                  }`}
+                  aria-label={`Ir para planilha ${idx + 1}: ${table.name}`}
+                  aria-current={active ? "true" : undefined}
+                />
+              );
+            })}
+          </div>
+        )}
+      </div>
+
+      {onConfirm && (
+        <div className="mt-6 flex flex-col gap-3 border-t border-slate-200 pt-6 sm:flex-row sm:items-center sm:justify-between">
           <p className="text-sm text-slate-600">
             {selectedIds.length === 0
-              ? "Selecione ao menos uma tabela para continuar."
-              : `${selectedIds.length} tabela(s) selecionada(s)`}
+              ? "Selecione ao menos uma planilha para continuar."
+              : `${selectedIds.length} planilha(s) selecionada(s)`}
           </p>
           <button
             type="button"
@@ -354,35 +476,8 @@ export const TableSelector: React.FC<TableSelectorProps> = ({
             disabled={disabled || selectedIds.length === 0}
           >
             {confirmLabel}
-            {selectedIds.length > 0
-              ? ` (${selectedIds.length})`
-              : ""}
+            {selectedIds.length > 0 ? ` (${selectedIds.length})` : ""}
           </button>
-        </div>
-      )}
-
-      {/* Modal de Preview */}
-      {previewImage && (
-        <div 
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4"
-          onClick={() => setPreviewImage(null)}
-          aria-modal="true"
-          role="dialog"
-        >
-          <div 
-            className="relative flex max-h-[90vh] max-w-[90vw] flex-col rounded-lg bg-white p-2 shadow-2xl"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <button
-              type="button"
-              onClick={() => setPreviewImage(null)}
-              className="absolute -top-4 -right-4 flex h-8 w-8 items-center justify-center rounded-full bg-white text-slate-700 shadow hover:bg-slate-100 focus:outline-none"
-              aria-label="Fechar visualização"
-            >
-              <X className="h-5 w-5" />
-            </button>
-            <ExpandedTableModalContent imageBase64={previewImage} />
-          </div>
         </div>
       )}
     </div>

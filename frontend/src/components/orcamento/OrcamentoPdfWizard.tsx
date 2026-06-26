@@ -5,6 +5,7 @@ import { AlertCircle, FileText, Loader2, UploadCloud, X } from "lucide-react";
 import { toast } from "sonner";
 import { btnPrimary } from "../ui/buttonClasses";
 import { TableSelector, type MockTableOption } from "../TableSelector";
+import { mapTableCandidates } from "../../utils/mapTableCandidates";
 import { WizardStepper, type WizardStep } from "../WizardStepper";
 import {
   detectOrcamentoTables,
@@ -606,15 +607,7 @@ export function OrcamentoPdfWizard({
 
       setPhase("detecting");
       const detectResponse = await detectOrcamentoTables(currentUploadId);
-      const mappedOptions: MockTableOption[] = (detectResponse.options || []).map(
-        (option) => ({
-          id: option.id,
-          name: option.nome_tabela || `Página ${option.pagina}`,
-          page: option.num_pagina || option.pagina,
-          preview: option.preview_texto || "Visualização disponível via imagem.",
-          imagem_base64: option.imagem_base64,
-        }),
-      );
+      const mappedOptions = mapTableCandidates(detectResponse.options || []);
 
       setTableOptions(mappedOptions);
       setSelectedTableIds([]);
@@ -881,7 +874,9 @@ export function OrcamentoPdfWizard({
                   loading={phase === "uploading" || phase === "detecting"}
                   disabled={phase === "processing_ai"}
                   selectedIds={selectedTableIds}
+                  layout="large"
                   onSelect={handleSelectTable}
+                  onSetSelectedIds={setSelectedTableIds}
                   onConfirm={() => void handleConfirmSelection()}
                   confirmLabel="Analisar com IA"
                 />
